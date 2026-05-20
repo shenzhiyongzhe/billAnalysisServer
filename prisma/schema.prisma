@@ -1,0 +1,36 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model WechatUser {
+  id        Int      @id @default(autoincrement())
+  openid    String   @unique
+  displayId String   @unique 
+  nickname  String   @default("微信用户")
+  avatar    String   @default("/static/default-avatar.png")
+  records   QueryRecord[]
+  createdAt DateTime @default(now())
+}
+
+model StatementUser {
+  id        Int      @id @default(autoincrement())
+  name      String
+  idNumber  String
+  records   QueryRecord[]
+  createdAt DateTime @default(now())
+}
+
+model QueryRecord {
+  id              Int      @id @default(autoincrement())
+  userId          Int
+  user            WechatUser @relation(fields: [userId], references: [id])
+  statementUserId Int?
+  statementUser   StatementUser? @relation(fields: [statementUserId], references: [id])
+  filePath        String   
+  source          String   
+  createdAt       DateTime @default(now())
+}
