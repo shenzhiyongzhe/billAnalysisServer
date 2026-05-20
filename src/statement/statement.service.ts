@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
-import * as pdfParse from 'pdf-parse';
+import { PDFParse } from 'pdf-parse';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -41,9 +41,18 @@ export class StatementService {
     }
   }
 
+  private async parsePdfText(buffer: Buffer): Promise<string> {
+    const parser = new PDFParse({ data: buffer });
+    try {
+      const result = await parser.getText();
+      return result.text;
+    } finally {
+      await parser.destroy();
+    }
+  }
+
   async processAndSaveFile(userId: number, buffer: Buffer, originalname: string): Promise<number> {
-    const data = await pdfParse(buffer);
-    const text = data.text;
+    const text = await this.parsePdfText(buffer);
     
     let source = '未知';
     if (text.includes('微信支付交易明细证明') || originalname.includes('微信')) {
@@ -62,20 +71,21 @@ export class StatementService {
     fs.writeFileSync(filePath, buffer);
 
     // DB Operations
-    let statementUser = null;
+    let statementUserId: number | null = null;
     if (parsedData.summary.name !== '未知') {
-      statementUser = await this.prisma.statementUser.create({
+      const statementUser = await this.prisma.statementUser.create({
         data: {
           name: parsedData.summary.name,
           idNumber: parsedData.summary.idNumber,
         }
       });
+      statementUserId = statementUser.id;
     }
 
     const record = await this.prisma.queryRecord.create({
       data: {
         userId,
-        statementUserId: statementUser ? statementUser.id : null,
+        statementUserId,
         filePath: fileName,
         source,
       }
@@ -101,8 +111,9 @@ export class StatementService {
   }
 
   private async getOrParseData(recordId: number): Promise<StatementData> {
-    if (this.memoryCache.has(recordId)) {
-      return this.memoryCache.get(recordId);
+    const cached = this.memoryCache.get(recordId);
+    if (cached) {
+      return cached;
     }
     
     const record = await this.prisma.queryRecord.findUnique({ where: { id: recordId }});
@@ -112,8 +123,8 @@ export class StatementService {
     if (!fs.existsSync(filePath)) throw new NotFoundException('File not found on server');
 
     const buffer = fs.readFileSync(filePath);
-    const data = await pdfParse(buffer);
-    const parsedData = this.extractData(data.text, record.source);
+    const text = await this.parsePdfText(buffer);
+    const parsedData = this.extractData(text, record.source);
     
     this.memoryCache.set(recordId, parsedData);
     return parsedData;
