@@ -61,6 +61,60 @@ export DOCKER_IMAGE=ghcr.io/<owner>/bill-analysis-server:<tag>
 bash deploy/remote-deploy.sh
 ```
 
+## 与 lims 同机、同域名（xinde8888.com）
+
+服务器上 **lims 已占用 `127.0.0.1:3000`**，billAnalysis 使用 **`127.0.0.1:4000`**（`docker-compose.prod.yml` 已绑定本机端口）。
+
+### 路径分工（同一 `www.xinde8888.com`，按项目前缀区分）
+
+| 对外路径 | 后端 | 说明 |
+|----------|------|------|
+| `/api/bill-analysis/*` | `:4000` | 账单解析（`API_PREFIX=api/bill-analysis`） |
+| `/api/*`（其余，如 lims） | `:3000` | lims，`proxy_pass` 带尾部 `/` **去掉** `/api` |
+
+账单接口示例：`POST /api/bill-analysis/auth/login`、`GET /api/bill-analysis/statements/history`  
+
+lims 可后续改为 `/api/lims/*` 与账单对称；当前仍为 `/api` + 模块路径。
+
+### 上传文件 URL（Nginx 静态）
+
+| URL 前缀 | 宿主机目录 |
+|----------|------------|
+| `/uploads/lims/` | `/var/www/lim/lims-nest-server/public/uploads/` |
+| `/uploads/bill-analysis/` | `$DEPLOY_PATH/uploads/`（如 `/opt/bill-analysis-server/uploads/`） |
+| `/uploads/`（无项目名） | 兼容旧 lims 链接，仍指向 lims 目录 |
+
+生产 compose 已使用 `./uploads` 绑定挂载，部署后请在 `DEPLOY_PATH` 下 `mkdir -p uploads`。
+
+lims 新文件建议使用 `/uploads/lims/...`；账单若对外提供文件链接，使用 `/uploads/bill-analysis/...`。
+
+### Nginx
+
+在现有站点配置里，把 **bill 的 `location` 块放在 lims 的 `location /api/` 之前**（见仓库根目录 `lims` 示例文件）。修改后：
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### 部署目录建议
+
+与 lims 分开，例如：
+
+- lims：`/var/www/lim/...`（现有）
+- bill：`/opt/bill-analysis-server`（`DEPLOY_PATH`，仅 compose + `.env` + `deploy/`）
+
+### 小程序
+
+`billAnalysisTaro` 的 `.env.production` 中：
+
+```text
+TARO_APP_API_BASE=https://www.xinde8888.com
+```
+
+小程序请求基址为 `https://www.xinde8888.com/api/bill-analysis`（由 `config/api.ts` 拼接 `API_PREFIX`）。
+
+微信公众平台 → 开发管理 → 服务器域名：request 合法域名需包含 `https://www.xinde8888.com`（与 lims 相同，一般已配置）。
+
 ## 本地开发
 
 ```bash

@@ -1,0 +1,196 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name xinde8888.com www.xinde8888.com;
+    
+    # 记录访问日志以便调试
+    access_log /var/log/nginx/redirect.access.log;
+    
+    # 重定向到HTTPS
+    return 301 https://www.xinde8888.com$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name xinde8888.com;
+    # 必须要带证书，否则 HTTPS 握手会失败
+    ssl_certificate /etc/nginx/ssl/xinde8888.com.crt;
+    ssl_certificate_key /etc/nginx/ssl/xinde8888.com.key;
+    return 301 https://www.xinde8888.com$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+
+    ssl_certificate /etc/nginx/ssl/xinde8888.com.crt;
+    ssl_certificate_key /etc/nginx/ssl/xinde8888.com.key;
+
+    server_name www.xinde8888.com;
+
+    # 完整的 SSL 配置（非常重要！）
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    ssl_session_tickets off;
+
+    # 现代 SSL 配置
+    ssl_ecdh_curve X25519:prime256v1:secp384r1:secp521r1;
+    ssl_stapling on;
+    ssl_stapling_verify on;
+    client_max_body_size 100M;
+
+    # 安全头
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header X-Frame-Options DENY always;
+    add_header X-Content-Type-Options nosniff always;
+    
+    # 根目录设置
+    root /var/www/color-picker;
+    index index.html;
+    
+
+    # 静态资源缓存
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        add_header X-Static "hit";
+        
+        # 确保能找到文件
+        try_files $uri =404;
+    }
+    
+    # 上传文件静态服务（按项目前缀分发，URL：/uploads/<项目名>/...）
+    # 例：/uploads/lims/avatars/a.jpg  → lims-nest-server/public/uploads/avatars/a.jpg
+    #     /uploads/bill-analysis/xxx.pdf → bill-analysis-server 部署目录下的 uploads/
+
+    location ^~ /uploads/bill-analysis/ {
+        alias /opt/bill-analysis-server/uploads/;
+        autoindex off;
+        expires 30d;
+        add_header Cache-Control "public";
+        add_header Access-Control-Allow-Origin '$http_origin';
+        add_header X-Content-Type-Options nosniff;
+        try_files $uri =404;
+    }
+
+    location ^~ /uploads/lims/ {
+        alias /var/www/lim/lims-nest-server/public/uploads/;
+        autoindex off;
+        expires 30d;
+        add_header Cache-Control "public";
+        add_header Access-Control-Allow-Origin '$http_origin';
+        add_header X-Content-Type-Options nosniff;
+        try_files $uri =404;
+    }
+
+    # lims 历史直链兼容（/uploads/avatars/...，无项目前缀时仍走 lims）
+    location ^~ /uploads/ {
+        alias /var/www/lim/lims-nest-server/public/uploads/;
+        autoindex off;
+        expires 30d;
+        add_header Cache-Control "public";
+        add_header Access-Control-Allow-Origin '$http_origin';
+        add_header X-Content-Type-Options nosniff;
+        try_files $uri =404;
+        access_log /var/log/nginx/uploads.access.log;
+        error_log /var/log/nginx/uploads.error.log;
+    }
+    
+    # billAnalysisServer（127.0.0.1:4000，路径 /api/bill-analysis/，须写在 lims 的 /api/ 之前）
+    location ^~ /api/bill-analysis/ {
+        client_max_body_size 20M;
+        if ($request_method = 'OPTIONS') {
+            add_header 'Access-Control-Allow-Origin' '$http_origin' always;
+            add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, PATCH, OPTIONS' always;
+            add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization,Cookie' always;
+            add_header 'Access-Control-Allow-Credentials' 'true' always;
+            add_header 'Access-Control-Max-Age' 1728000 always;
+            add_header 'Content-Type' 'text/plain; charset=utf-8' always;
+            add_header 'Content-Length' 0 always;
+            return 204;
+        }
+        add_header 'Access-Control-Allow-Origin' '$http_origin' always;
+        add_header 'Access-Control-Allow-Credentials' 'true' always;
+        proxy_pass http://127.0.0.1:4000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 120s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 120s;
+    }
+
+    location /api/lims/ {
+
+    client_max_body_size 10M;
+        # 处理 CORS 预检请求
+        if ($request_method = 'OPTIONS') {
+            add_header 'Access-Control-Allow-Origin' '$http_origin' always;
+            add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, PATCH, OPTIONS' always;
+            add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization,Cookie' always;
+            add_header 'Access-Control-Allow-Credentials' 'true' always;
+            add_header 'Access-Control-Max-Age' 1728000 always;
+            add_header 'Content-Type' 'text/plain; charset=utf-8' always;
+            add_header 'Content-Length' 0 always;
+            return 204;
+        }
+        # 对于实际请求，也设置 Allow-Origin
+        add_header 'Access-Control-Allow-Origin' '$http_origin' always;
+        add_header 'Access-Control-Allow-Credentials' 'true' always;
+        add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range,Authorization' always;
+        
+        proxy_pass http://127.0.0.1:3000/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+        
+        # 超时设置
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+    
+    # 健康检查
+    location /health {
+        access_log off;
+        return 200 "healthy\n";
+        add_header Content-Type text/plain;
+    }
+        # 主路由 - 处理 SPA 路由
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+    
+    
+    # Gzip 压缩
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types
+        text/plain
+        text/css
+        text/xml
+        text/javascript
+        application/json
+        application/javascript
+        application/xml+rss
+        application/atom+xml
+        image/svg+xml;
+        
+    # 日志设置
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log;
+}

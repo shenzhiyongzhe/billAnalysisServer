@@ -2,7 +2,7 @@ import { Controller, Post, Get, Delete, Param, UseInterceptors, UploadedFile, Ba
 import { FileInterceptor } from '@nestjs/platform-express';
 import { StatementService } from './statement.service';
 
-@Controller('api/statements')
+@Controller('statements')
 export class StatementController {
   constructor(private readonly statementService: StatementService) {}
 
