@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bill-analysis-server
+    restart: always
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - DATABASE_URL=${DATABASE_URL}
+      - WX_APP_ID=${WX_APP_ID}
+      - WX_APP_SECRET=${WX_APP_SECRET}
+    volumes:
+      - ./uploads:/usr/src/app/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

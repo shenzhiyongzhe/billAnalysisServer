@@ -1,5 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { PDFParse } from 'pdf-parse';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -15,6 +16,10 @@ export interface StatementSummary {
   totalExpenditure: number;
   selfIncome: number;
   selfExpenditure: number;
+  maskedIdNumber?: string;
+  nativePlace?: string;
+  genderText?: string;
+  age?: number;
 }
 
 export interface Transaction {
@@ -32,8 +37,8 @@ export interface StatementData {
 
 @Injectable()
 export class StatementService {
-  private memoryCache: Map<number, StatementData> = new Map();
   private uploadsDir = path.join(process.cwd(), 'uploads');
+  private readonly logger = new Logger(StatementService.name);
 
   constructor(private prisma: PrismaService) {
     if (!fs.existsSync(this.uploadsDir)) {
@@ -52,8 +57,14 @@ export class StatementService {
   }
 
   async processAndSaveFile(userId: number, buffer: Buffer, originalname: string): Promise<number> {
+    const user = await this.prisma.wechatUser.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+    if (user.remainingQueries <= 0) {
+      throw new BadRequestException('剩余分析次数不足');
+    }
+
     const text = await this.parsePdfText(buffer);
-    
+
     let source = '未知';
     if (text.includes('微信支付交易明细证明') || originalname.includes('微信')) {
       source = '微信';
@@ -91,13 +102,22 @@ export class StatementService {
       }
     });
 
-    this.memoryCache.set(record.id, parsedData);
+    // Decrease remaining queries
+    await this.prisma.wechatUser.update({
+      where: { id: userId },
+      data: { remainingQueries: user.remainingQueries - 1 }
+    });
+
     return record.id;
   }
 
   async getHistory(userId: number) {
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
     const records = await this.prisma.queryRecord.findMany({
-      where: { userId },
+      where: { 
+        userId,
+        createdAt: { gte: threeDaysAgo } 
+      },
       include: { statementUser: true },
       orderBy: { createdAt: 'desc' }
     });
@@ -110,29 +130,64 @@ export class StatementService {
     }));
   }
 
-  private async getOrParseData(recordId: number): Promise<StatementData> {
-    const cached = this.memoryCache.get(recordId);
-    if (cached) {
-      return cached;
+  async deleteRecord(userId: number, recordId: number) {
+    const record = await this.prisma.queryRecord.findUnique({
+      where: { id: recordId },
+    });
+    if (!record) {
+      throw new NotFoundException('Record not found');
     }
-    
+    if (record.userId !== userId) {
+      throw new ForbiddenException('无权删除该记录');
+    }
+
+    const filePath = path.join(this.uploadsDir, record.filePath);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+
+    await this.prisma.queryRecord.delete({ where: { id: recordId } });
+    return { success: true };
+  }
+
+  private async getOrParseData(recordId: number): Promise<StatementData> {
     const record = await this.prisma.queryRecord.findUnique({ where: { id: recordId }});
     if (!record) throw new NotFoundException('Record not found');
 
     const filePath = path.join(this.uploadsDir, record.filePath);
-    if (!fs.existsSync(filePath)) throw new NotFoundException('File not found on server');
+    if (!fs.existsSync(filePath)) throw new NotFoundException('文件已过期被清理或不存在');
 
     const buffer = fs.readFileSync(filePath);
     const text = await this.parsePdfText(buffer);
     const parsedData = this.extractData(text, record.source);
     
-    this.memoryCache.set(recordId, parsedData);
     return parsedData;
   }
 
   async getSummary(id: number): Promise<StatementSummary | null> {
     const data = await this.getOrParseData(id);
-    return { ...data.summary, id: id.toString() };
+    const summary: StatementSummary = { ...data.summary, id: id.toString() };
+    
+    if (summary.idNumber) {
+      const idNum = summary.idNumber;
+      summary.maskedIdNumber = idNum.length > 8 
+        ? idNum.slice(0, 4) + '*'.repeat(idNum.length - 8) + idNum.slice(-4)
+        : idNum;
+        
+      try {
+        const idcard = require('idcard');
+        const info = idcard.info(idNum);
+        if (info && info.valid) {
+          summary.nativePlace = info.address;
+          summary.genderText = info.gender === 'M' ? '男' : info.gender === 'F' ? '女' : '-';
+          summary.age = info.age;
+        }
+      } catch (e) {
+        this.logger.error('Failed to parse ID card:', e);
+      }
+    }
+    
+    return summary;
   }
 
   async getCounterparties(id: number) {
@@ -190,7 +245,29 @@ export class StatementService {
     return data.transactions;
   }
 
-  // --- Parsing logic from V1 ---
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  async handleCron() {
+    this.logger.debug('Running daily cleanup job for old records and files.');
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    
+    const oldRecords = await this.prisma.queryRecord.findMany({
+      where: { createdAt: { lt: threeDaysAgo } }
+    });
+
+    for (const record of oldRecords) {
+      const filePath = path.join(this.uploadsDir, record.filePath);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+
+    await this.prisma.queryRecord.deleteMany({
+      where: { createdAt: { lt: threeDaysAgo } }
+    });
+    this.logger.debug(`Cleaned up ${oldRecords.length} old records.`);
+  }
+
+  // --- Parsing logic ---
   private extractData(text: string, source: string): StatementData {
     let name = '未知';
     let idNumber = '';
@@ -204,39 +281,9 @@ export class StatementService {
         name = nameMatch[1];
         idNumber = nameMatch[2];
       }
-      
-      const dateLines = text.match(/\d{4}-\d{2}-\d{2}/g);
-      if (dateLines && dateLines.length >= 2) {
-        dateLines.sort();
-        startDate = dateLines[0];
-        endDate = dateLines[dateLines.length - 1];
-      }
 
-      const lines = text.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (/^\d{4}-\d{2}-\d{2}$/.test(line)) {
-          const date = line;
-          const month = date.substring(0, 7);
-          let amount = 0;
-          let counterparty = '未知';
-          let type: '收入' | '支出' | '不计收支' = '支出';
-
-          const details = (lines[i+1] || '') + (lines[i+2] || '') + (lines[i+3] || '');
-          const match = details.match(/(收入|支出|其他).*?(零钱|零钱通|银行卡)?([0-9]+\.[0-9]{2})(.*)/);
-          
-          if (match) {
-             const tType = match[1];
-             if (tType === '收入') type = '收入';
-             else if (tType === '支出') type = '支出';
-             else type = '不计收支';
-             
-             amount = parseFloat(match[3]);
-             counterparty = match[4].trim() || '未知商户';
-             transactions.push({ date, month, type, amount, counterparty });
-          }
-        }
-      }
+      const parsedTxs = this.parseWechatTransactions(text);
+      transactions.push(...parsedTxs);
     } else if (source === '支付宝') {
        const nameMatch = text.match(/兹证明:(.*?)\(证件号码:(.*?)\)/);
        if (nameMatch) {
@@ -291,9 +338,13 @@ export class StatementService {
     
     transactions.sort((a, b) => a.date.localeCompare(b.date));
     if (transactions.length > 0) {
-        if (!startDate) startDate = transactions[0].date;
-        if (!endDate) endDate = transactions[transactions.length - 1].date;
+        const toDateOnly = (d: string) => (d.length >= 10 ? d.substring(0, 10) : d);
+        if (!startDate) startDate = toDateOnly(transactions[0].date);
+        if (!endDate) endDate = toDateOnly(transactions[transactions.length - 1].date);
     }
+    
+    // 按降序排列记录
+    transactions.reverse();
 
     let totalIncome = 0;
     let totalExpenditure = 0;
@@ -314,5 +365,103 @@ export class StatementService {
       summary: { id: '', source, name, idNumber, startDate, endDate, totalIncome, totalExpenditure, selfIncome, selfExpenditure },
       transactions
     };
+  }
+
+  private parseWechatTransactions(text: string): Transaction[] {
+    const transactions: Transaction[] = [];
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+
+    let i = 0;
+    while (i < lines.length) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(lines[i])) {
+        const date = lines[i];
+        const month = date.substring(0, 7);
+        let blockStart = i + 1;
+        let dateTime = date;
+        if (
+          blockStart < lines.length &&
+          /^\d{2}:\d{2}:\d{2}$/.test(lines[blockStart])
+        ) {
+          dateTime = `${date} ${lines[blockStart]}`;
+          blockStart++;
+        }
+
+        // Collect block lines until next date or page marker
+        const blockLines: string[] = [];
+        let j = blockStart;
+        while (
+          j < lines.length &&
+          !/^\d{4}-\d{2}-\d{2}$/.test(lines[j]) &&
+          !lines[j].startsWith('-- ')
+        ) {
+          blockLines.push(lines[j]);
+          j++;
+        }
+
+        const blockText = blockLines.join(' ');
+
+        // Find the line that contains the amount
+        const amountLineIdx = blockLines.findIndex(l => /\d+\.\d{2}/.test(l));
+        if (amountLineIdx >= 0) {
+          const amountLine = blockLines[amountLineIdx];
+          const isOtherType = /^其他\s/.test(amountLine.trim());
+
+          // 收/支/其他 在金额行；中文无法用 \b，故按金额行判断
+          let type: '收入' | '支出' | '不计收支' = '支出';
+          if (isOtherType) type = '不计收支';
+          else if (/\s收入(?:\s|\/)/.test(amountLine) || /\s收入\s/.test(blockText)) type = '收入';
+          else if (/\s支出\s/.test(amountLine) || /\s支出\s/.test(blockText)) type = '支出';
+          else if (/不计/.test(blockText)) type = '不计收支';
+          const amountMatch = amountLine.match(/(\d+\.\d{2})/);
+          if (amountMatch) {
+            const amount = parseFloat(amountMatch[1]);
+            // 「其他」类：交易对方与商户单号均为 /，不再解析后续字段
+            const counterparty = isOtherType
+              ? '/'
+              : this.extractWechatCounterparty(
+                  amountLine
+                    .slice(amountLine.indexOf(amountMatch[0]) + amountMatch[0].length)
+                    .trim(),
+                  blockLines.slice(amountLineIdx + 1),
+                );
+            transactions.push({ date: dateTime, month, type, amount, counterparty });
+          }
+        }
+
+        i = j;
+      } else {
+        i++;
+      }
+    }
+
+    return transactions;
+  }
+
+  private extractWechatCounterparty(sameLine: string, nextLines: string[]): string {
+    const parts: string[] = [];
+
+    // Process the same line as the amount — split by whitespace, stop at first merchant-ID token
+    if (sameLine) {
+      const tokens = sameLine.split(/\s+/);
+      for (const token of tokens) {
+        if (token && this.isWechatMerchantId(token)) break;
+        if (token) parts.push(token);
+      }
+    }
+
+    // Process subsequent block lines
+    for (const line of nextLines) {
+      if (!line) continue;
+      if (line === '/') break;
+      if (this.isWechatMerchantId(line)) break;
+      if (line.startsWith('--') || line.startsWith('说明')) break;
+      parts.push(line);
+    }
+
+    return parts.join('').trim() || '未知';
+  }
+
+  private isWechatMerchantId(str: string): boolean {
+    return str === '/' || (str.length >= 10 && /^[0-9a-zA-Z_\-]+$/.test(str));
   }
 }

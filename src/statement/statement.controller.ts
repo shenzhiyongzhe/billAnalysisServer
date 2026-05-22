@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Param, UseInterceptors, UploadedFile, BadRequestException, Body, Query } from '@nestjs/common';
+import { Controller, Post, Get, Delete, Param, UseInterceptors, UploadedFile, BadRequestException, Body, Query } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { StatementService } from './statement.service';
 
@@ -27,6 +27,15 @@ export class StatementController {
       throw new BadRequestException('userId is required');
     }
     return this.statementService.getHistory(userId);
+  }
+
+  @Delete(':id')
+  deleteRecord(@Param('id') id: string, @Query('userId') userIdStr: string) {
+    const userId = parseInt(userIdStr, 10);
+    if (!userId || isNaN(userId)) {
+      throw new BadRequestException('userId is required');
+    }
+    return this.statementService.deleteRecord(userId, parseInt(id, 10));
   }
 
   @Get(':id/summary')
