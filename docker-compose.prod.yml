@@ -1,8 +1,10 @@
-# 本地开发：构建并运行（PostgreSQL 建议在宿主机，.env 中 DATABASE_URL 勿用 localhost）
+# 生产环境：仅拉取镜像运行（由 CI 注入 DOCKER_IMAGE）
+# 用法：export DOCKER_IMAGE=ghcr.io/<owner>/bill-analysis-server:latest
+#      docker compose -f docker-compose.prod.yml up -d
+# .env 中 DATABASE_URL 主机勿用 localhost（除非 PostgreSQL 真跑在同一容器内）
 services:
   app:
-    build: .
-    image: bill-analysis-server:local
+    image: ${DOCKER_IMAGE:?Set DOCKER_IMAGE to ghcr.io/.../bill-analysis-server:tag}
     container_name: bill-analysis-server
     restart: unless-stopped
     ports:

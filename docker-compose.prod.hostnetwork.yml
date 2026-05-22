@@ -1,16 +1,17 @@
-# 本地开发：构建并运行（PostgreSQL 建议在宿主机，.env 中 DATABASE_URL 勿用 localhost）
+# 宿主机 PostgreSQL 仅监听 127.0.0.1 时使用（与 bridge + host.docker.internal 二选一）
+# .env 中 DATABASE_URL 主机须为 127.0.0.1，例如：
+#   postgresql://user:PASSWORD@127.0.0.1:5432/bill_analysis?schema=public
+# 用法：
+#   export DOCKER_IMAGE=ghcr.io/<owner>/bill-analysis-server:tag
+#   docker compose -f docker-compose.prod.hostnetwork.yml up -d
 services:
   app:
-    build: .
-    image: bill-analysis-server:local
+    image: ${DOCKER_IMAGE:?Set DOCKER_IMAGE to ghcr.io/.../bill-analysis-server:tag}
     container_name: bill-analysis-server
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:${PORT:-4000}:4000"
+    network_mode: host
     env_file:
       - .env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     environment:
       PORT: "4000"
       NODE_ENV: production

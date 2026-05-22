@@ -1,63 +1,88 @@
+# 构建并推送 ghcr.io/<owner>/bill-analysis-server ，再通过 SSH 在服务器拉取并重启。
+#
+# Variables：DEPLOY_HOST, DEPLOY_USER, DEPLOY_PATH（Settings → Secrets and variables → Actions → Variables）
+# Secrets：DEPLOY_SSH_PASSWORD
+# 未设置 DEPLOY_HOST 时跳过 deploy，仅构建推送镜像。
+# 私有镜像需在服务器 docker login ghcr.io（见 deploy/README.md）。
+
 name: Deploy billAnalysisServer
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
+    paths:
+      - "src/**"
+      - "prisma/**"
+      - "package.json"
+      - "package-lock.json"
+      - "Dockerfile"
+      - "prisma.config.ts"
+      - "docker-compose*.yml"
+      - "deploy/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
 
-# WX_APP_ID / WX_APP_SECRET 由服务器 PROJECT_PATH 下的 .env 提供
 env:
-  PROJECT_PATH: ${{ vars.PROJECT_PATH }}
-  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  CONTEXT_PATH: ${{ vars.DOCKER_CONTEXT || '.' }}
 
 jobs:
-  deploy:
+  build-and-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_full_sha: ${{ steps.resolve.outputs.image_full_sha }}
 
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Copy files to Server via SCP
-      uses: appleboy/scp-action@v0.1.7
-      with:
-        host: ${{ vars.SSH_HOST }}
-        username: ${{ vars.SSH_USERNAME }}
-        password: ${{ secrets.SSH_PASSWORD }}
-        source: "./**"
-        target: ${{ env.PROJECT_PATH }}
-        exclude: "node_modules,dist,uploads,.git,.github,.env"
+      - name: Resolve ghcr.io image name (lowercase owner)
+        id: resolve
+        run: |
+          OWNER_LC="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          IMAGE_NAME="ghcr.io/${OWNER_LC}/bill-analysis-server"
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> "$GITHUB_ENV"
+          echo "image_full_sha=${IMAGE_NAME}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
-    - name: Execute Remote SSH Commands
-      uses: appleboy/ssh-action@v1.0.3
-      env:
-        DATABASE_URL: ${{ env.DATABASE_URL }}
-        PROJECT_PATH: ${{ env.PROJECT_PATH }}
-      with:
-        host: ${{ vars.SSH_HOST }}
-        username: ${{ vars.SSH_USERNAME }}
-        password: ${{ secrets.SSH_PASSWORD }}
-        envs: DATABASE_URL,PROJECT_PATH
-        script: |
-          cd "$PROJECT_PATH"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-          if [ ! -f .env ]; then
-            echo "Error: .env not found in $PROJECT_PATH (need WX_APP_ID, WX_APP_SECRET)"
-            exit 1
-          fi
-          
-          # Create upload directory on host if not exists
-          mkdir -p uploads
-          
-          # DATABASE_URL 来自 GitHub Secrets；微信配置由同目录 .env 提供
-          export DATABASE_URL="$DATABASE_URL"
-          
-          # Deploy with Docker Compose
-          if command -v docker-compose &> /dev/null; then
-            docker-compose down
-            docker-compose up -d --build
-          else
-            docker compose down
-            docker compose up -d --build
-          fi
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CONTEXT_PATH }}
+          file: ${{ env.CONTEXT_PATH }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: |
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
+      vars.DEPLOY_HOST != ''
+    steps:
+      - uses: appleboy/ssh-action@v1.2.0
+        env:
+          IMAGE_FULL_SHA: ${{ needs.build-and-push.outputs.image_full_sha }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        with:
+          host: ${{ vars.DEPLOY_HOST }}
+          username: ${{ vars.DEPLOY_USER }}
+          password: ${{ secrets.DEPLOY_SSH_PASSWORD }}
+          envs: IMAGE_FULL_SHA,DEPLOY_PATH
+          script_stop: true
+          script: |
+            set -exo pipefail
+            cd "${DEPLOY_PATH}"
+            if [ ! -f .env ]; then
+              echo "Error: .env not found in ${DEPLOY_PATH}"
+              exit 1
+            fi
+            export DOCKER_IMAGE="${IMAGE_FULL_SHA}"
+            bash deploy/remote-deploy.sh
