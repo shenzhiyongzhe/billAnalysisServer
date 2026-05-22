@@ -11,8 +11,8 @@ server {
 }
 
 server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name xinde8888.com;
     # 必须要带证书，否则 HTTPS 握手会失败
     ssl_certificate /etc/nginx/ssl/xinde8888.com.crt;
@@ -21,8 +21,8 @@ server {
 }
 
 server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
 
     ssl_certificate /etc/nginx/ssl/xinde8888.com.crt;
     ssl_certificate_key /etc/nginx/ssl/xinde8888.com.key;
@@ -33,14 +33,19 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
     ssl_prefer_server_ciphers off;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-    ssl_session_tickets off;
+    ssl_session_cache shared:SSL:50m;
+    ssl_session_timeout 1d;
+    # 开启 tickets 以提升重复连接握手性能；生产建议配合 ticket key 轮换
+    ssl_session_tickets on;
 
     # 现代 SSL 配置
     ssl_ecdh_curve X25519:prime256v1:secp384r1:secp521r1;
     ssl_stapling on;
     ssl_stapling_verify on;
+    resolver 1.1.1.1 8.8.8.8 valid=300s ipv6=off;
+    resolver_timeout 5s;
+    keepalive_timeout 65s;
+    keepalive_requests 1000;
     client_max_body_size 100M;
 
     # 安全头
