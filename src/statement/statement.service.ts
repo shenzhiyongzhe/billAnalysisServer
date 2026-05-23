@@ -84,12 +84,20 @@ export class StatementService {
     // DB Operations
     let statementUserId: number | null = null;
     if (parsedData.summary.name !== '未知') {
-      const statementUser = await this.prisma.statementUser.create({
-        data: {
-          name: parsedData.summary.name,
-          idNumber: parsedData.summary.idNumber,
-        }
-      });
+      let statementUser = parsedData.summary.idNumber
+        ? await this.prisma.statementUser.findFirst({
+            where: { idNumber: parsedData.summary.idNumber },
+          })
+        : null;
+
+      if (!statementUser) {
+        statementUser = await this.prisma.statementUser.create({
+          data: {
+            name: parsedData.summary.name,
+            idNumber: parsedData.summary.idNumber,
+          },
+        });
+      }
       statementUserId = statementUser.id;
     }
 
