@@ -28,7 +28,18 @@ export class PrismaService
 
   async onModuleInit() {
     await this.$connect();
+    await this.syncSerialSequences();
     this.logger.log('PostgreSQL 数据库连接成功');
+  }
+
+  /** 将 SERIAL 序列对齐到当前 MAX(id)，避免 P2002 QueryRecord_pkey */
+  private async syncSerialSequences(): Promise<void> {
+    const tables = ['WechatUser', 'StatementUser', 'QueryRecord'] as const;
+    for (const table of tables) {
+      await this.$executeRawUnsafe(
+        `SELECT setval(pg_get_serial_sequence('"${table}"', 'id'), COALESCE((SELECT MAX("id") FROM "${table}"), 1))`,
+      );
+    }
   }
 
   async onModuleDestroy() {
