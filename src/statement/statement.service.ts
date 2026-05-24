@@ -35,14 +35,21 @@ export interface StatementData {
   transactions: Transaction[];
 }
 
+export interface StatementResultMeta {
+  id: string;
+  source: string;
+  name: string;
+  idNumber: string;
+  startDate: string;
+  endDate: string;
+  maskedIdNumber?: string;
+  nativePlace?: string;
+  genderText?: string;
+  age?: number;
+}
+
 export interface StatementResultBundle {
-  summary: StatementSummary;
-  monthly: Array<{
-    month: string;
-    income: number;
-    expenditure: number;
-    balance: number;
-  }>;
+  summary: StatementResultMeta;
   raw: Transaction[];
 }
 
@@ -296,11 +303,21 @@ export class StatementService {
     return result;
   }
 
+  private pickResultMeta(summary: StatementSummary): StatementResultMeta {
+    const {
+      totalIncome: _ti,
+      totalExpenditure: _te,
+      selfIncome: _si,
+      selfExpenditure: _se,
+      ...meta
+    } = summary;
+    return meta;
+  }
+
   async getResultBundle(id: number): Promise<StatementResultBundle> {
     const data = await this.getPersistedData(id);
     return {
-      summary: data.summary,
-      monthly: this.computeMonthly(data.transactions),
+      summary: this.pickResultMeta(data.summary),
       raw: data.transactions,
     };
   }
