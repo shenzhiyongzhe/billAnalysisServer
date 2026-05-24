@@ -15,13 +15,23 @@ model WechatUser {
   remainingQueries Int      @default(99)
   level            Int      @default(1)
   records          QueryRecord[]
+  session          UserSession?
   createdAt        DateTime @default(now())
+}
+
+model UserSession {
+  id               Int      @id @default(autoincrement())
+  userId           Int      @unique
+  user             WechatUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokenHash String
+  expiresAt        DateTime
+  updatedAt        DateTime @updatedAt
 }
 
 model StatementUser {
   id         Int      @id @default(autoincrement())
   name       String
-  idNumber   String
+  idNumber   String   @unique
   queryCount Int      @default(1)
   records    QueryRecord[]
   createdAt  DateTime @default(now())
@@ -35,6 +45,7 @@ model QueryRecord {
   statementUser   StatementUser? @relation(fields: [statementUserId], references: [id])
   filePath        String   
   source          String   
+  status          String   @default("pending")
   summaryJson     Json?
   transactionsJson Json?
   startDate       DateTime?

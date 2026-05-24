@@ -75,76 +75,119 @@ export class StatementService {
   }
 
   async processAndSaveFile(userId: number, buffer: Buffer, originalname: string): Promise<number> {
-    const user = await this.prisma.wechatUser.findUnique({ where: { id: userId } });
-    if (!user) throw new NotFoundException('User not found');
-    if (user.remainingQueries <= 0) {
+    // ① 校验用户并原子扣减次数
+    const updated = await this.prisma.wechatUser.updateMany({
+      where: { id: userId, remainingQueries: { gt: 0 } },
+      data: { remainingQueries: { decrement: 1 } },
+    });
+    if (updated.count === 0) {
+      const exists = await this.prisma.wechatUser.findUnique({
+        where: { id: userId },
+        select: { id: true },
+      });
+      if (!exists) throw new NotFoundException('User not found');
       throw new BadRequestException('剩余分析次数不足');
     }
 
-    const text = await this.parsePdfText(buffer);
-
+    // ② 从文件名快速判断来源（不解析 PDF），用于立即建记录
     let source = '未知';
-    if (text.includes('微信支付交易明细证明') || originalname.includes('微信')) {
-      source = '微信';
-    } else if (text.includes('支付宝支付科技有限公司') || originalname.includes('支付宝')) {
-      source = '支付宝';
-    } else if (text.includes('招商银行交易流水') || originalname.includes('招商')) {
-      source = '招商银行';
-    }
+    if (originalname.includes('微信')) source = '微信';
+    else if (originalname.includes('支付宝')) source = '支付宝';
+    else if (originalname.includes('招商')) source = '招商银行';
 
-    const parsedData = this.extractData(text, source);
-    
-    // Save file
+    // ③ 写文件 + 立即创建 pending 记录，同步返回 id
     const fileName = `${Date.now()}_${originalname}`;
     const filePath = path.join(this.uploadsDir, fileName);
-    fs.writeFileSync(filePath, buffer);
+    await fs.promises.writeFile(filePath, buffer);
 
-    // DB Operations
-    let statementUserId: number | null = null;
-    if (parsedData.summary.name !== '未知') {
-      let statementUser = parsedData.summary.idNumber
-        ? await this.prisma.statementUser.findFirst({
-            where: { idNumber: parsedData.summary.idNumber },
-          })
-        : null;
+    const record = await this.prisma.queryRecord.create({
+      data: { userId, filePath: fileName, source, status: 'pending' },
+    });
+    const recordId = record.id;
 
-      if (!statementUser) {
-        statementUser = await this.prisma.statementUser.create({
-          data: {
+    // ④ 后台异步解析 PDF（不阻塞当前请求）
+    setImmediate(() => {
+      void this.parseAndUpdateRecord(recordId, userId, buffer, originalname, filePath, source);
+    });
+
+    return recordId;
+  }
+
+  private async parseAndUpdateRecord(
+    recordId: number,
+    userId: number,
+    buffer: Buffer,
+    originalname: string,
+    filePath: string,
+    quickSource: string,
+  ): Promise<void> {
+    try {
+      const text = await this.parsePdfText(buffer);
+
+      // 解析后用文本内容精确判断来源
+      let source = quickSource;
+      if (text.includes('微信支付交易明细证明')) source = '微信';
+      else if (text.includes('支付宝支付科技有限公司')) source = '支付宝';
+      else if (text.includes('招商银行交易流水')) source = '招商银行';
+
+      const parsedData = this.extractData(text, source);
+
+      // upsert statementUser
+      let statementUserId: number | null = null;
+      if (parsedData.summary.name !== '未知') {
+        const su = await this.prisma.statementUser.upsert({
+          where: { idNumber: parsedData.summary.idNumber || '' },
+          update: { queryCount: { increment: 1 } },
+          create: {
             name: parsedData.summary.name,
             idNumber: parsedData.summary.idNumber,
             queryCount: 1,
           },
+          select: { id: true },
         });
-      } else {
-        statementUser = await this.prisma.statementUser.update({
-          where: { id: statementUser.id },
-          data: { queryCount: { increment: 1 } },
-        });
+        statementUserId = su.id;
       }
-      statementUserId = statementUser.id;
+
+      // 更新记录为 done
+      await this.prisma.queryRecord.update({
+        where: { id: recordId },
+        data: {
+          source,
+          statementUserId,
+          summaryJson: parsedData.summary as any,
+          transactionsJson: parsedData.transactions as any,
+          startDate: this.parseDateOnlyToDate(parsedData.summary.startDate),
+          endDate: this.parseDateOnlyToDate(parsedData.summary.endDate),
+          status: 'done',
+        },
+      });
+    } catch (err) {
+      this.logger.error(`Background parse failed for record ${recordId}:`, err);
+      // 解析失败：标记 failed，并退还次数
+      await Promise.all([
+        this.prisma.queryRecord.update({
+          where: { id: recordId },
+          data: { status: 'failed' },
+        }),
+        this.prisma.wechatUser.update({
+          where: { id: userId },
+          data: { remainingQueries: { increment: 1 } },
+        }),
+      ]);
     }
+  }
 
-    const record = await this.prisma.queryRecord.create({
-      data: {
-        userId,
-        statementUserId,
-        filePath: fileName,
-        source,
-        summaryJson: parsedData.summary as any,
-        transactionsJson: parsedData.transactions as any,
-        startDate: this.parseDateOnlyToDate(parsedData.summary.startDate),
-        endDate: this.parseDateOnlyToDate(parsedData.summary.endDate),
-      }
+  async getRecordStatus(recordId: number, userId: number): Promise<{ status: string; ready: boolean }> {
+    const record = await this.prisma.queryRecord.findUnique({
+      where: { id: recordId },
+      select: { userId: true, status: true },
     });
-
-    // Decrease remaining queries
-    await this.prisma.wechatUser.update({
-      where: { id: userId },
-      data: { remainingQueries: user.remainingQueries - 1 }
-    });
-
-    return record.id;
+    if (!record) throw new NotFoundException('Record not found');
+    if (record.userId !== userId) throw new ForbiddenException('无权访问该记录');
+    return {
+      status: record.status,
+      ready: record.status === 'done',
+    };
   }
 
   async getHistory(userId: number) {
@@ -184,6 +227,17 @@ export class StatementService {
 
     await this.prisma.queryRecord.delete({ where: { id: recordId } });
     return { success: true };
+  }
+
+  private async assertRecordOwnership(recordId: number, userId: number) {
+    const record = await this.prisma.queryRecord.findUnique({
+      where: { id: recordId },
+      select: { userId: true },
+    });
+    if (!record) throw new NotFoundException('Record not found');
+    if (record.userId !== userId) {
+      throw new ForbiddenException('无权访问该记录');
+    }
   }
 
   private async getPersistedData(recordId: number): Promise<StatementData> {
@@ -314,7 +368,11 @@ export class StatementService {
     return meta;
   }
 
-  async getResultBundle(id: number): Promise<StatementResultBundle> {
+  async getResultBundle(
+    id: number,
+    userId: number,
+  ): Promise<StatementResultBundle> {
+    await this.assertRecordOwnership(id, userId);
     const data = await this.getPersistedData(id);
     return {
       summary: this.pickResultMeta(data.summary),
@@ -322,7 +380,8 @@ export class StatementService {
     };
   }
 
-  async getCounterparties(id: number) {
+  async getCounterparties(id: number, userId: number) {
+    await this.assertRecordOwnership(id, userId);
     const data = await this.getPersistedData(id);
     const map = new Map<string, { count: number, total: number }>();
     let grandTotal = 0;
