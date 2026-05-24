@@ -35,6 +35,17 @@ export interface StatementData {
   transactions: Transaction[];
 }
 
+export interface StatementResultBundle {
+  summary: StatementSummary;
+  monthly: Array<{
+    month: string;
+    income: number;
+    expenditure: number;
+    balance: number;
+  }>;
+  raw: Transaction[];
+}
+
 @Injectable()
 export class StatementService {
   private uploadsDir = path.join(process.cwd(), 'uploads');
@@ -107,6 +118,10 @@ export class StatementService {
         statementUserId,
         filePath: fileName,
         source,
+        summaryJson: parsedData.summary as any,
+        transactionsJson: parsedData.transactions as any,
+        startDate: this.parseDateOnlyToDate(parsedData.summary.startDate),
+        endDate: this.parseDateOnlyToDate(parsedData.summary.endDate),
       }
     });
 
@@ -158,48 +173,134 @@ export class StatementService {
     return { success: true };
   }
 
-  private async getOrParseData(recordId: number): Promise<StatementData> {
-    const record = await this.prisma.queryRecord.findUnique({ where: { id: recordId }});
+  private async getPersistedData(recordId: number): Promise<StatementData> {
+    const record = await this.prisma.queryRecord.findUnique({
+      where: { id: recordId },
+      select: {
+        id: true,
+        source: true,
+        filePath: true,
+        summaryJson: true,
+        transactionsJson: true,
+      },
+    });
     if (!record) throw new NotFoundException('Record not found');
 
-    const filePath = path.join(this.uploadsDir, record.filePath);
-    if (!fs.existsSync(filePath)) throw new NotFoundException('文件已过期被清理或不存在');
+    if (!record.summaryJson || !record.transactionsJson) {
+      return this.backfillLegacyRecord(record.id, record.source, record.filePath);
+    }
+
+    const summary = {
+      ...(record.summaryJson as any),
+      id: record.id.toString(),
+      source: (record.summaryJson as any)?.source || record.source,
+    } as StatementSummary;
+
+    const transactions = (record.transactionsJson as any[]).map((t) => ({
+      date: t.date,
+      month: t.month,
+      type: t.type,
+      amount: Number(t.amount) || 0,
+      counterparty: t.counterparty || '未知',
+    })) as Transaction[];
+
+    return {
+      summary: this.enrichSummary(summary),
+      transactions,
+    };
+  }
+
+  private async backfillLegacyRecord(
+    recordId: number,
+    source: string,
+    fileName: string,
+  ): Promise<StatementData> {
+    const filePath = path.join(this.uploadsDir, fileName);
+    if (!fs.existsSync(filePath)) {
+      throw new NotFoundException('文件已过期被清理或不存在');
+    }
 
     const buffer = fs.readFileSync(filePath);
     const text = await this.parsePdfText(buffer);
-    const parsedData = this.extractData(text, record.source);
-    
-    return parsedData;
+    const parsedData = this.extractData(text, source);
+
+    await this.prisma.queryRecord.update({
+      where: { id: recordId },
+      data: {
+        summaryJson: parsedData.summary as any,
+        transactionsJson: parsedData.transactions as any,
+        startDate: this.parseDateOnlyToDate(parsedData.summary.startDate),
+        endDate: this.parseDateOnlyToDate(parsedData.summary.endDate),
+      },
+    });
+
+    this.logger.log(`Backfilled cached payload for legacy record ${recordId}`);
+
+    return {
+      summary: this.enrichSummary({
+        ...parsedData.summary,
+        id: recordId.toString(),
+      }),
+      transactions: parsedData.transactions,
+    };
   }
 
-  async getSummary(id: number): Promise<StatementSummary | null> {
-    const data = await this.getOrParseData(id);
-    const summary: StatementSummary = { ...data.summary, id: id.toString() };
-    
-    if (summary.idNumber) {
-      const idNum = summary.idNumber;
-      summary.maskedIdNumber = idNum.length > 8 
-        ? idNum.slice(0, 4) + '*'.repeat(idNum.length - 8) + idNum.slice(-4)
-        : idNum;
-        
-      try {
-        const idcard = require('idcard');
-        const info = idcard.info(idNum);
-        if (info && info.valid) {
-          summary.nativePlace = info.address;
-          summary.genderText = info.gender === 'M' ? '男' : info.gender === 'F' ? '女' : '-';
-          summary.age = info.age;
-        }
-      } catch (e) {
-        this.logger.error('Failed to parse ID card:', e);
+  private enrichSummary(summary: StatementSummary): StatementSummary {
+    const result = { ...summary };
+    if (!result.idNumber) return result;
+
+    const idNum = result.idNumber;
+    result.maskedIdNumber = idNum.length > 8
+      ? idNum.slice(0, 4) + '*'.repeat(idNum.length - 8) + idNum.slice(-4)
+      : idNum;
+
+    try {
+      const idcard = require('idcard');
+      const info = idcard.info(idNum);
+      if (info && info.valid) {
+        result.nativePlace = info.address;
+        result.genderText = info.gender === 'M' ? '男' : info.gender === 'F' ? '女' : '-';
+        result.age = info.age;
       }
+    } catch (e) {
+      this.logger.error('Failed to parse ID card:', e);
     }
-    
-    return summary;
+    return result;
+  }
+
+  private computeMonthly(transactions: Transaction[]) {
+    const map = new Map<string, { income: number, expenditure: number }>();
+
+    transactions.forEach(t => {
+      if (t.type !== '不计收支') {
+        const entry = map.get(t.month) || { income: 0, expenditure: 0 };
+        if (t.type === '收入') entry.income += t.amount;
+        if (t.type === '支出') entry.expenditure += t.amount;
+        map.set(t.month, entry);
+      }
+    });
+
+    const result = Array.from(map.entries()).map(([month, stats]) => ({
+      month,
+      income: stats.income,
+      expenditure: stats.expenditure,
+      balance: stats.income - stats.expenditure,
+    }));
+    result.sort((a, b) => a.month.localeCompare(b.month));
+    return result;
+  }
+
+  async getResultBundle(id: number): Promise<StatementResultBundle> {
+    const data = await this.getPersistedData(id);
+    return {
+      summary: data.summary,
+      monthly: this.computeMonthly(data.transactions),
+      raw: data.transactions,
+    };
   }
 
   async getCounterparties(id: number) {
-    const data = await this.getOrParseData(id);
+    const data = await this.getPersistedData(id);
     const map = new Map<string, { count: number, total: number }>();
     let grandTotal = 0;
 
@@ -224,33 +325,11 @@ export class StatementService {
     return result;
   }
 
-  async getMonthly(id: number) {
-    const data = await this.getOrParseData(id);
-    const map = new Map<string, { income: number, expenditure: number }>();
-    
-    data.transactions.forEach(t => {
-       if (t.type !== '不计收支') {
-           const entry = map.get(t.month) || { income: 0, expenditure: 0 };
-           if (t.type === '收入') entry.income += t.amount;
-           if (t.type === '支出') entry.expenditure += t.amount;
-           map.set(t.month, entry);
-       }
-    });
-
-    const result = Array.from(map.entries()).map(([month, stats]) => ({
-        month,
-        income: stats.income,
-        expenditure: stats.expenditure,
-        balance: stats.income - stats.expenditure
-    }));
-
-    result.sort((a, b) => a.month.localeCompare(b.month));
-    return result;
-  }
-
-  async getRawData(id: number) {
-    const data = await this.getOrParseData(id);
-    return data.transactions;
+  private parseDateOnlyToDate(dateOnly: string) {
+    if (!dateOnly) return null;
+    const parsed = new Date(`${dateOnly}T00:00:00.000Z`);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed;
   }
 
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)

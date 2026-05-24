@@ -38,25 +38,13 @@ export class StatementController {
     return this.statementService.deleteRecord(userId, parseInt(id, 10));
   }
 
-  @Get(':id/summary')
-  async getSummary(@Param('id') id: string) {
-    const summary = await this.statementService.getSummary(parseInt(id, 10));
-    if (!summary) throw new BadRequestException('Statement not found');
-    return summary;
-  }
-
   @Get(':id/counterparties')
   getCounterparties(@Param('id') id: string) {
     return this.statementService.getCounterparties(parseInt(id, 10));
   }
 
-  @Get(':id/monthly')
-  getMonthly(@Param('id') id: string) {
-    return this.statementService.getMonthly(parseInt(id, 10));
-  }
-
-  @Get(':id/raw')
-  getRawData(@Param('id') id: string) {
-    return this.statementService.getRawData(parseInt(id, 10));
+  @Get(':id/result')
+  getResult(@Param('id') id: string) {
+    return this.statementService.getResultBundle(parseInt(id, 10));
   }
 }

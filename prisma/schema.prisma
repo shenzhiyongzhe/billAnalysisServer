@@ -34,5 +34,9 @@ model QueryRecord {
   statementUser   StatementUser? @relation(fields: [statementUserId], references: [id])
   filePath        String   
   source          String   
+  summaryJson     Json?
+  transactionsJson Json?
+  startDate       DateTime?
+  endDate         DateTime?
   createdAt       DateTime @default(now())
 }
