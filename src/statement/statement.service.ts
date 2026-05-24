@@ -106,7 +106,13 @@ export class StatementService {
           data: {
             name: parsedData.summary.name,
             idNumber: parsedData.summary.idNumber,
+            queryCount: 1,
           },
+        });
+      } else {
+        statementUser = await this.prisma.statementUser.update({
+          where: { id: statementUser.id },
+          data: { queryCount: { increment: 1 } },
         });
       }
       statementUserId = statementUser.id;

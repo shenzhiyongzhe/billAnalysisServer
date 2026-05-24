@@ -19,11 +19,12 @@ model WechatUser {
 }
 
 model StatementUser {
-  id        Int      @id @default(autoincrement())
-  name      String
-  idNumber  String
-  records   QueryRecord[]
-  createdAt DateTime @default(now())
+  id         Int      @id @default(autoincrement())
+  name       String
+  idNumber   String
+  queryCount Int      @default(1)
+  records    QueryRecord[]
+  createdAt  DateTime @default(now())
 }
 
 model QueryRecord {
