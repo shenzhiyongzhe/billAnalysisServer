@@ -459,25 +459,43 @@ export class StatementService {
          name = nameMatch[1];
          idNumber = nameMatch[2];
        }
-       const lines = text.split('\n');
-       let currentType: any = '支出';
+       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+       let txs: string[][] = [];
+       let currentTx: string[] = [];
+       
        for (let i = 0; i < lines.length; i++) {
-           const line = lines[i].trim();
-           if (line === '支出' || line === '收入' || line.includes('不计')) {
-               if (line === '支出') currentType = '支出';
-               else if (line === '收入') currentType = '收入';
-               else currentType = '不计收支';
+           const line = lines[i];
+           if (line.startsWith('支出 ') || line.startsWith('收入 ') || line === '不计' || line.startsWith('不计 ')) {
+               if (currentTx.length > 0) txs.push(currentTx);
+               currentTx = [line];
+           } else {
+               if (currentTx.length > 0) currentTx.push(line);
            }
+       }
+       if (currentTx.length > 0) txs.push(currentTx);
+
+       for (const txLines of txs) {
+           const fullText = txLines.join(' ');
+           const typeMatch = fullText.match(/^(支出|收入|不计\s*收支)/);
+           if (!typeMatch) continue;
+
+           const typeStr = typeMatch[1].replace(/\s+/g, '');
+           const type: '收入' | '支出' | '不计收支' = typeStr as any;
            
-           const dateMatch = line.match(/(\d{4}-\d{2}-\d{2})/);
-           if (dateMatch) {
-               const date = dateMatch[1];
-               const month = date.substring(0, 7);
-               const amountMatch = (lines[i] + lines[i-1] + lines[i-2]).match(/([0-9]+\.[0-9]{2})/);
-               if (amountMatch) {
-                   transactions.push({ date, month, type: currentType, amount: parseFloat(amountMatch[1]), counterparty: '支付宝商户' });
-               }
-           }
+           const amountMatch = fullText.match(/\s([0-9]+\.[0-9]{2})\s/);
+           if (!amountMatch) continue;
+           
+           const amount = parseFloat(amountMatch[1]);
+           
+           const dateMatch = fullText.match(/(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}:\d{2}:\d{2}))?/);
+           if (!dateMatch) continue;
+           
+           const date = dateMatch[2] ? `${dateMatch[1]} ${dateMatch[2]}` : dateMatch[1];
+           const month = dateMatch[1].substring(0, 7);
+           
+           const counterparty = fullText.substring(typeMatch[0].length).trim().split(/\s+/)[0] || '支付宝商户';
+           
+           transactions.push({ date, month, type, amount, counterparty });
        }
     } else if (source === '招商银行') {
        const nameMatch = text.match(/户\s*名：(.*?)\s/);
