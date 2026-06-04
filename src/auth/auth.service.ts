@@ -134,6 +134,22 @@ export class AuthService {
     return this.toPublicUser(user);
   }
 
+  async updateProfile(userId: number, nickname?: string, avatar?: string): Promise<PublicUser> {
+    const data: any = {};
+    if (nickname !== undefined) data.nickname = nickname;
+    if (avatar !== undefined) data.avatar = avatar;
+
+    if (Object.keys(data).length === 0) {
+      return this.getProfile(userId);
+    }
+
+    const updatedUser = await this.prisma.wechatUser.update({
+      where: { id: userId },
+      data,
+    });
+    return this.toPublicUser(updatedUser);
+  }
+
   async refreshSession(refreshToken: string): Promise<AuthTokensResponse> {
     if (!refreshToken?.trim()) {
       throw new BadRequestException('refreshToken is required');

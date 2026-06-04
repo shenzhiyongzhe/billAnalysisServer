@@ -8,6 +8,7 @@ import {
   UploadedFile,
   BadRequestException,
   UseGuards,
+  Body,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { StatementService } from './statement.service';
@@ -34,6 +35,20 @@ export class StatementController {
       file.originalname,
     );
     return { id: recordId };
+  }
+
+  @Post(':id/retry')
+  async retryWithPassword(
+    @Param('id') id: string,
+    @CurrentUserId() userId: number,
+    @Body('password') password?: string,
+  ) {
+    await this.statementService.retryWithPassword(
+      userId,
+      parseInt(id, 10),
+      password,
+    );
+    return { success: true };
   }
 
   @Get('history')

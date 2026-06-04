@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { PDFParse } from 'pdf-parse';
+import { PDFParse, PasswordException } from 'pdf-parse';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -10,6 +10,7 @@ export interface StatementSummary {
   source: string;
   name: string;
   idNumber: string;
+  cardNumber?: string;
   startDate: string;
   endDate: string;
   totalIncome: number;
@@ -17,6 +18,7 @@ export interface StatementSummary {
   selfIncome: number;
   selfExpenditure: number;
   maskedIdNumber?: string;
+  maskedCardNumber?: string;
   nativePlace?: string;
   genderText?: string;
   age?: number;
@@ -40,9 +42,11 @@ export interface StatementResultMeta {
   source: string;
   name: string;
   idNumber: string;
+  cardNumber?: string;
   startDate: string;
   endDate: string;
   maskedIdNumber?: string;
+  maskedCardNumber?: string;
   nativePlace?: string;
   genderText?: string;
   age?: number;
@@ -64,8 +68,8 @@ export class StatementService {
     }
   }
 
-  private async parsePdfText(buffer: Buffer): Promise<string> {
-    const parser = new PDFParse({ data: buffer });
+  private async parsePdfText(buffer: Buffer, password?: string): Promise<string> {
+    const parser = new PDFParse({ data: buffer, password });
     try {
       const result = await parser.getText();
       return result.text;
@@ -94,6 +98,8 @@ export class StatementService {
     if (originalname.includes('微信')) source = '微信';
     else if (originalname.includes('支付宝')) source = '支付宝';
     else if (originalname.includes('招商')) source = '招商银行';
+    else if (originalname.includes('工商') || originalname.includes('工行')) source = '工商银行';
+    else if (originalname.includes('农商') || originalname.includes('农村商业')) source = '农商银行';
 
     // ③ 写文件 + 立即创建 pending 记录，同步返回 id
     const fileName = `${Date.now()}_${originalname}`;
@@ -112,7 +118,6 @@ export class StatementService {
 
     return recordId;
   }
-
   private async parseAndUpdateRecord(
     recordId: number,
     userId: number,
@@ -120,33 +125,70 @@ export class StatementService {
     originalname: string,
     filePath: string,
     quickSource: string,
+    password?: string,
   ): Promise<void> {
     try {
-      const text = await this.parsePdfText(buffer);
+      const text = await this.parsePdfText(buffer, password);
 
-      // 解析后用文本内容精确判断来源
-      let source = quickSource;
-      if (text.includes('微信支付交易明细证明')) source = '微信';
-      else if (text.includes('支付宝支付科技有限公司')) source = '支付宝';
-      else if (text.includes('招商银行交易流水')) source = '招商银行';
+      // 解析后用文本内容精确判断来源 (使用固定头部特征字符串，避免跨行交易流水中出现对方银行名称导致误判)
+      let source: string | null = null;
+      if (text.includes('微信支付交易明细证明')) {
+        source = '微信';
+      } else if (text.includes('支付宝支付科技有限公司')) {
+        source = '支付宝';
+      } else if (text.includes('招商银行交易流水')) {
+        source = '招商银行';
+      } else if (text.includes('广东顺德农村商业银行股份有限公司')) {
+        source = '农商银行';
+      } else if (text.includes('中国工商银行借记账户历史明细')) {
+        source = '工商银行';
+      }
+
+      if (!source) {
+        throw new BadRequestException('不支持的账单格式，请上传正确的微信、支付宝、招商银行、工商银行或农商银行交易流水。');
+      }
 
       const parsedData = this.extractData(text, source);
 
       // upsert statementUser
       let statementUserId: number | null = null;
       if (parsedData.summary.name !== '未知') {
-        const su = await this.prisma.statementUser.upsert({
-          where: { idNumber: parsedData.summary.idNumber || '' },
-          update: { queryCount: { increment: 1 } },
-          create: {
-            name: parsedData.summary.name,
-            idNumber: parsedData.summary.idNumber,
-            queryCount: 1,
-          },
-          select: { id: true },
-        });
-        statementUserId = su.id;
+        const idNumber = parsedData.summary.idNumber || null;
+        const cardNumber = parsedData.summary.cardNumber || null;
+
+        if (idNumber || cardNumber) {
+          let su;
+          if (idNumber) {
+            su = await this.prisma.statementUser.upsert({
+              where: { idNumber },
+              update: { queryCount: { increment: 1 } },
+              create: {
+                name: parsedData.summary.name,
+                idNumber,
+                cardNumber,
+                queryCount: 1,
+              },
+              select: { id: true },
+            });
+          } else {
+            su = await this.prisma.statementUser.upsert({
+              where: { cardNumber: cardNumber! },
+              update: { queryCount: { increment: 1 } },
+              create: {
+                name: parsedData.summary.name,
+                idNumber,
+                cardNumber,
+                queryCount: 1,
+              },
+              select: { id: true },
+            });
+          }
+          statementUserId = su.id;
+        }
       }
+
+      // 将生成的记录 ID 写入 summary，以便持久化数据包含真实 ID
+      parsedData.summary.id = recordId.toString();
 
       // 更新记录为 done
       await this.prisma.queryRecord.update({
@@ -162,6 +204,14 @@ export class StatementService {
         },
       });
     } catch (err) {
+      if (err instanceof PasswordException) {
+        this.logger.warn(`PDF is password protected for record ${recordId}`);
+        await this.prisma.queryRecord.update({
+          where: { id: recordId },
+          data: { status: 'password_required' },
+        });
+        return;
+      }
       this.logger.error(`Background parse failed for record ${recordId}:`, err);
       // 解析失败：标记 failed，并退还次数
       await Promise.all([
@@ -176,7 +226,6 @@ export class StatementService {
       ]);
     }
   }
-
   async getRecordStatus(recordId: number, userId: number): Promise<{ status: string; ready: boolean }> {
     const record = await this.prisma.queryRecord.findUnique({
       where: { id: recordId },
@@ -227,6 +276,34 @@ export class StatementService {
 
     await this.prisma.queryRecord.delete({ where: { id: recordId } });
     return { success: true };
+  }
+
+  async retryWithPassword(userId: number, recordId: number, password?: string): Promise<void> {
+    const record = await this.prisma.queryRecord.findUnique({
+      where: { id: recordId },
+    });
+    if (!record) throw new NotFoundException('Record not found');
+    if (record.userId !== userId) throw new ForbiddenException('无权访问该记录');
+    if (record.status !== 'password_required' && record.status !== 'failed') {
+      throw new BadRequestException('记录状态不满足重试条件');
+    }
+
+    const filePath = path.join(this.uploadsDir, record.filePath);
+    if (!fs.existsSync(filePath)) {
+      throw new NotFoundException('账单源文件不存在或已被清理');
+    }
+
+    // 更新状态回 pending
+    await this.prisma.queryRecord.update({
+      where: { id: recordId },
+      data: { status: 'pending' },
+    });
+
+    const buffer = fs.readFileSync(filePath);
+    // 异步执行解析，带上密码
+    setImmediate(() => {
+      void this.parseAndUpdateRecord(recordId, userId, buffer, path.basename(filePath), filePath, record.source, password);
+    });
   }
 
   private async assertRecordOwnership(recordId: number, userId: number) {
@@ -314,24 +391,33 @@ export class StatementService {
 
   private enrichSummary(summary: StatementSummary): StatementSummary {
     const result = { ...summary };
-    if (!result.idNumber) return result;
 
-    const idNum = result.idNumber;
-    result.maskedIdNumber = idNum.length > 8
-      ? idNum.slice(0, 4) + '*'.repeat(idNum.length - 8) + idNum.slice(-4)
-      : idNum;
+    if (result.idNumber) {
+      const idNum = result.idNumber;
+      result.maskedIdNumber = idNum.length > 8
+        ? idNum.slice(0, 4) + '*'.repeat(idNum.length - 8) + idNum.slice(-4)
+        : idNum;
 
-    try {
-      const idcard = require('idcard');
-      const info = idcard.info(idNum);
-      if (info && info.valid) {
-        result.nativePlace = info.address;
-        result.genderText = info.gender === 'M' ? '男' : info.gender === 'F' ? '女' : '-';
-        result.age = info.age;
+      try {
+        const idcard = require('idcard');
+        const info = idcard.info(idNum);
+        if (info && info.valid) {
+          result.nativePlace = info.address;
+          result.genderText = info.gender === 'M' ? '男' : info.gender === 'F' ? '女' : '-';
+          result.age = info.age;
+        }
+      } catch (e) {
+        this.logger.error('Failed to parse ID card:', e);
       }
-    } catch (e) {
-      this.logger.error('Failed to parse ID card:', e);
     }
+
+    if (result.cardNumber) {
+      const cardNum = result.cardNumber;
+      result.maskedCardNumber = cardNum.length > 8
+        ? cardNum.slice(0, 4) + '*'.repeat(cardNum.length - 8) + cardNum.slice(-4)
+        : cardNum;
+    }
+
     return result;
   }
 
@@ -440,6 +526,7 @@ export class StatementService {
   private extractData(text: string, source: string): StatementData {
     let name = '未知';
     let idNumber = '';
+    let cardNumber = '';
     const transactions: Transaction[] = [];
     let startDate = '';
     let endDate = '';
@@ -521,6 +608,131 @@ export class StatementService {
                transactions.push({ date, month, type, amount, counterparty });
            }
        }
+    } else if (source === '工商银行') {
+       const nameMatch = text.match(/户名：(.*?)\s+/);
+       if (nameMatch) {
+           name = nameMatch[1];
+       }
+       const cardMatch = text.match(/卡号\s+(\d+)/);
+       if (cardMatch) {
+           cardNumber = cardMatch[1];
+       }
+       const rangeMatch = text.match(/起止日期：(\d{4}-\d{2}-\d{2})\s*—\s*(\d{4}-\d{2}-\d{2})/);
+       if (rangeMatch) {
+           startDate = rangeMatch[1];
+           endDate = rangeMatch[2];
+       }
+
+       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+       let currentDate = '';
+       
+       for (let i = 0; i < lines.length; i++) {
+         const line = lines[i];
+         if (/^\d{4}-\d{2}-\d{2}$/.test(line)) {
+           currentDate = line;
+           continue;
+         }
+         
+         const timeMatch = line.match(/^(\d{2}:\d{2}:\d{2})/);
+         if (timeMatch && currentDate) {
+           const match = line.match(/^(\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+([+-][0-9,]+\.[0-9]{2})\s+([0-9,]+\.[0-9]{2})\s*(.*?)$/);
+           if (match) {
+             const time = match[1];
+             const date = `${currentDate} ${time}`;
+             const month = currentDate.substring(0, 7);
+             const abstract = match[7];
+             const amountStr = match[9].replace(/,/g, '');
+             const amountNum = parseFloat(amountStr);
+             const type = amountNum < 0 ? '支出' : '收入';
+             const amount = Math.abs(amountNum);
+             const channel = match[11] || '';
+             const counterparty = channel ? `${abstract}-${channel}` : abstract;
+             
+             transactions.push({ date, month, type, amount, counterparty });
+           }
+         }
+       }
+    } else if (source === '农商银行') {
+       const nameMatch = text.match(/户名：(.*?)\s+/);
+       if (nameMatch) {
+           name = nameMatch[1];
+       }
+       const cardMatch = text.match(/账号\/卡号：(.*?)\s+/);
+       if (cardMatch) {
+           cardNumber = cardMatch[1];
+       }
+       const rangeMatch = text.match(/起止日期:(.*?)\s+到\s+(.*?)\s+/);
+       if (rangeMatch) {
+           startDate = rangeMatch[1];
+           endDate = rangeMatch[2];
+       }
+
+       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+       const blocks: Array<{ date: string; lines: string[] }> = [];
+       let currentBlock: { date: string; lines: string[] } | null = null;
+
+       for (let i = 0; i < lines.length; i++) {
+         const line = lines[i];
+         
+         if (/^\d{4}-\d{2}-\d{2}$/.test(line)) {
+           const nextLine = lines[i + 1] || '';
+           if (/^\d{2}:\d{2}:\d{2}\b/.test(nextLine)) {
+             if (currentBlock) blocks.push(currentBlock);
+             currentBlock = {
+               date: line,
+               lines: []
+             };
+             continue;
+           }
+         }
+         
+         if (currentBlock) {
+           if (line.includes('广东顺德农村商业银行') || line.includes('账户/卡明细信息') || line.includes('起止日期') || line.includes('交易时间') || line.startsWith('————') || line.startsWith('累计存入笔数') || line.startsWith('总交易笔数') || line.startsWith('END') || line.startsWith('打印机构')) {
+             continue;
+           }
+           currentBlock.lines.push(line);
+         }
+       }
+       if (currentBlock) blocks.push(currentBlock);
+
+       for (const block of blocks) {
+         const dateOnly = block.date;
+         const blockText = block.lines.join(' ');
+         
+         const match = blockText.match(/^(\d{2}:\d{2}:\d{2})\s+(\S+)\s+([+-][0-9,]+\.[0-9]{2})\s+(.*?)$/);
+         if (match) {
+           const time = match[1];
+           const date = `${dateOnly} ${time}`;
+           const month = dateOnly.substring(0, 7);
+           const amountStr = match[3].replace(/,/g, '');
+           const amountNum = parseFloat(amountStr);
+           const type = amountNum < 0 ? '支出' : '收入';
+           const amount = Math.abs(amountNum);
+           const remainder = match[4].trim();
+           
+           const balanceMatch = remainder.match(/\s([0-9,]+\.[0-9]{2})\s+(\S+渠道|核心渠道|网上渠道|快捷渠道|自助渠道|柜面渠道|其他渠道)\s+(\S+)\s*(.*?)$/);
+           
+           let counterparty = '';
+           if (balanceMatch) {
+             const balance = balanceMatch[1];
+             const channel = balanceMatch[2];
+             const summary = balanceMatch[3];
+             const memo = balanceMatch[4];
+             const opponentText = remainder.substring(0, remainder.indexOf(balanceMatch[0])).trim();
+             const nameAndBank = opponentText.replace(/\b\d+(\s+\d+)?\b/g, '').trim().replace(/\s+/g, ' ');
+             
+             counterparty = nameAndBank || opponentText || summary;
+             if (channel && channel !== '核心渠道') {
+               counterparty += ` (${channel})`;
+             }
+           } else {
+             counterparty = remainder.split(/\s+/)[0] || '未知';
+           }
+           
+           counterparty = counterparty.replace(/\s*\/\s*$/, '').trim();
+           transactions.push({ date, month, type, amount, counterparty });
+         }
+       }
     }
     
     transactions.sort((a, b) => a.date.localeCompare(b.date));
@@ -548,8 +760,13 @@ export class StatementService {
       }
     });
 
+    totalIncome = Number(totalIncome.toFixed(2));
+    totalExpenditure = Number(totalExpenditure.toFixed(2));
+    selfIncome = Number(selfIncome.toFixed(2));
+    selfExpenditure = Number(selfExpenditure.toFixed(2));
+
     return {
-      summary: { id: '', source, name, idNumber, startDate, endDate, totalIncome, totalExpenditure, selfIncome, selfExpenditure },
+      summary: { id: '', source, name, idNumber, cardNumber, startDate, endDate, totalIncome, totalExpenditure, selfIncome, selfExpenditure },
       transactions
     };
   }

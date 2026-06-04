@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Put,
   Body,
   UseGuards,
 } from '@nestjs/common';
@@ -27,6 +28,16 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async me(@CurrentUserId() userId: number) {
     return this.authService.getProfile(userId);
+  }
+
+  @Put('profile')
+  @UseGuards(JwtAuthGuard)
+  async updateProfile(
+    @CurrentUserId() userId: number,
+    @Body('nickname') nickname?: string,
+    @Body('avatar') avatar?: string,
+  ) {
+    return this.authService.updateProfile(userId, nickname, avatar);
   }
 
   @Post('logout')
