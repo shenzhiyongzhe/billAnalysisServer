@@ -17,6 +17,10 @@ services:
       PORT: "4000"
       NODE_ENV: production
       API_PREFIX: ${API_PREFIX:-api/bill-analysis}
+    networks:
+      - uniapp-network
+
+
     volumes:
       # 绑定宿主机目录，便于 Nginx 通过 /uploads/bill-analysis/ 直接读文件
       - ./uploads:/usr/src/app/uploads
@@ -32,3 +36,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 40s
+networks:
+  uniapp-network:
+    external: true

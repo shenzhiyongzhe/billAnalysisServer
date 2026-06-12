@@ -266,7 +266,7 @@ export class StatementService {
           select: { nickname: true, openid: true },
         });
 
-        const queryServerUrl = process.env.QUERY_SERVER_URL || 'http://localhost:8001';
+        const queryServerUrl = "http://query-server:8001"
         const targetUrl = `${queryServerUrl}/persons/query-record`;
 
         const response = await fetch(targetUrl, {
