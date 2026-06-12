@@ -15,6 +15,7 @@ const pool = new Pool({ connectionString });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
+
 // Helper to parse command-line arguments
 function parseArgs() {
   const args = process.argv.slice(2);
