@@ -266,10 +266,9 @@ export class StatementService {
           select: { nickname: true, openid: true },
         });
 
-        const queryServerUrl = "http://query-server:8001"
-        const targetUrl = `${queryServerUrl}/persons/query-record`;
+        const queryServerUrl = "https://www.xinde8888.com/api/query_info/persons/query-record";
 
-        const response = await fetch(targetUrl, {
+        const response = await fetch(queryServerUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -340,14 +339,14 @@ export class StatementService {
   async getHistory(userId: number) {
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
     const records = await this.prisma.queryRecord.findMany({
-      where: { 
+      where: {
         userId,
-        createdAt: { gte: threeDaysAgo } 
+        createdAt: { gte: threeDaysAgo }
       },
       include: { statementUser: true },
       orderBy: { createdAt: 'desc' }
     });
-    
+
     return records.map(r => ({
       id: r.id,
       source: r.source,
@@ -602,7 +601,7 @@ export class StatementService {
   async handleCron() {
     this.logger.debug('Running daily cleanup job for old records and files.');
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
-    
+
     const oldRecords = await this.prisma.queryRecord.findMany({
       where: { createdAt: { lt: threeDaysAgo } }
     });
@@ -639,207 +638,207 @@ export class StatementService {
       const parsedTxs = this.parseWechatTransactions(text);
       transactions.push(...parsedTxs);
     } else if (source === '支付宝') {
-       const nameMatch = text.match(/兹证明:(.*?)\(证件号码:(.*?)\)/);
-       if (nameMatch) {
-         name = nameMatch[1];
-         idNumber = nameMatch[2];
-       }
-       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-       let txs: string[][] = [];
-       let currentTx: string[] = [];
-       
-       for (let i = 0; i < lines.length; i++) {
-           const line = lines[i];
-           if (line.startsWith('支出 ') || line.startsWith('收入 ') || line === '不计' || line.startsWith('不计 ')) {
-               if (currentTx.length > 0) txs.push(currentTx);
-               currentTx = [line];
-           } else {
-               if (currentTx.length > 0) currentTx.push(line);
-           }
-       }
-       if (currentTx.length > 0) txs.push(currentTx);
+      const nameMatch = text.match(/兹证明:(.*?)\(证件号码:(.*?)\)/);
+      if (nameMatch) {
+        name = nameMatch[1];
+        idNumber = nameMatch[2];
+      }
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      let txs: string[][] = [];
+      let currentTx: string[] = [];
 
-       for (const txLines of txs) {
-           const fullText = txLines.join(' ');
-           const typeMatch = fullText.match(/^(支出|收入|不计\s*收支)/);
-           if (!typeMatch) continue;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.startsWith('支出 ') || line.startsWith('收入 ') || line === '不计' || line.startsWith('不计 ')) {
+          if (currentTx.length > 0) txs.push(currentTx);
+          currentTx = [line];
+        } else {
+          if (currentTx.length > 0) currentTx.push(line);
+        }
+      }
+      if (currentTx.length > 0) txs.push(currentTx);
 
-           const typeStr = typeMatch[1].replace(/\s+/g, '');
-           const type: '收入' | '支出' | '不计收支' = typeStr as any;
-           
-           const amountMatch = fullText.match(/\s([0-9]+\.[0-9]{2})\s/);
-           if (!amountMatch) continue;
-           
-           const amount = parseFloat(amountMatch[1]);
-           
-           const dateMatch = fullText.match(/(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}:\d{2}:\d{2}))?/);
-           if (!dateMatch) continue;
-           
-           const date = dateMatch[2] ? `${dateMatch[1]} ${dateMatch[2]}` : dateMatch[1];
-           const month = dateMatch[1].substring(0, 7);
-           
-           const counterparty = fullText.substring(typeMatch[0].length).trim().split(/\s+/)[0] || '支付宝商户';
-           
-           transactions.push({ date, month, type, amount, counterparty });
-       }
+      for (const txLines of txs) {
+        const fullText = txLines.join(' ');
+        const typeMatch = fullText.match(/^(支出|收入|不计\s*收支)/);
+        if (!typeMatch) continue;
+
+        const typeStr = typeMatch[1].replace(/\s+/g, '');
+        const type: '收入' | '支出' | '不计收支' = typeStr as any;
+
+        const amountMatch = fullText.match(/\s([0-9]+\.[0-9]{2})\s/);
+        if (!amountMatch) continue;
+
+        const amount = parseFloat(amountMatch[1]);
+
+        const dateMatch = fullText.match(/(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}:\d{2}:\d{2}))?/);
+        if (!dateMatch) continue;
+
+        const date = dateMatch[2] ? `${dateMatch[1]} ${dateMatch[2]}` : dateMatch[1];
+        const month = dateMatch[1].substring(0, 7);
+
+        const counterparty = fullText.substring(typeMatch[0].length).trim().split(/\s+/)[0] || '支付宝商户';
+
+        transactions.push({ date, month, type, amount, counterparty });
+      }
     } else if (source === '招商银行') {
-       const nameMatch = text.match(/户\s*名：(.*?)\s/);
-       if (nameMatch) {
-           name = nameMatch[1];
-       }
-       const lines = text.split('\n');
-       for (let i = 0; i < lines.length; i++) {
-           const line = lines[i].trim();
-           const match = line.match(/^(\d{4}-\d{2}-\d{2})\s+[A-Z]+\s+(-?[0-9,]+\.[0-9]{2})\s+[0-9,]+\.[0-9]{2}(.*?)$/);
-           if (match) {
-               const date = match[1];
-               const month = date.substring(0, 7);
-               const amountStr = match[2].replace(/,/g, '');
-               const amountNum = parseFloat(amountStr);
-               const type = amountNum < 0 ? '支出' : '收入';
-               const amount = Math.abs(amountNum);
-               
-               const remainder = match[3];
-               const counterpartyMatch = remainder.match(/支付(.*?)$|收款(.*?)$|转账(.*?)$/);
-               const counterparty = counterpartyMatch ? (counterpartyMatch[1] || counterpartyMatch[2] || counterpartyMatch[3] || '招行商户').trim() : remainder.trim();
-               
-               transactions.push({ date, month, type, amount, counterparty });
-           }
-       }
+      const nameMatch = text.match(/户\s*名：(.*?)\s/);
+      if (nameMatch) {
+        name = nameMatch[1];
+      }
+      const lines = text.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        const match = line.match(/^(\d{4}-\d{2}-\d{2})\s+[A-Z]+\s+(-?[0-9,]+\.[0-9]{2})\s+[0-9,]+\.[0-9]{2}(.*?)$/);
+        if (match) {
+          const date = match[1];
+          const month = date.substring(0, 7);
+          const amountStr = match[2].replace(/,/g, '');
+          const amountNum = parseFloat(amountStr);
+          const type = amountNum < 0 ? '支出' : '收入';
+          const amount = Math.abs(amountNum);
+
+          const remainder = match[3];
+          const counterpartyMatch = remainder.match(/支付(.*?)$|收款(.*?)$|转账(.*?)$/);
+          const counterparty = counterpartyMatch ? (counterpartyMatch[1] || counterpartyMatch[2] || counterpartyMatch[3] || '招行商户').trim() : remainder.trim();
+
+          transactions.push({ date, month, type, amount, counterparty });
+        }
+      }
     } else if (source === '工商银行') {
-       const nameMatch = text.match(/户名：(.*?)\s+/);
-       if (nameMatch) {
-           name = nameMatch[1];
-       }
-       const cardMatch = text.match(/卡号\s+(\d+)/);
-       if (cardMatch) {
-           cardNumber = cardMatch[1];
-       }
-       const rangeMatch = text.match(/起止日期：(\d{4}-\d{2}-\d{2})\s*—\s*(\d{4}-\d{2}-\d{2})/);
-       if (rangeMatch) {
-           startDate = rangeMatch[1];
-           endDate = rangeMatch[2];
-       }
+      const nameMatch = text.match(/户名：(.*?)\s+/);
+      if (nameMatch) {
+        name = nameMatch[1];
+      }
+      const cardMatch = text.match(/卡号\s+(\d+)/);
+      if (cardMatch) {
+        cardNumber = cardMatch[1];
+      }
+      const rangeMatch = text.match(/起止日期：(\d{4}-\d{2}-\d{2})\s*—\s*(\d{4}-\d{2}-\d{2})/);
+      if (rangeMatch) {
+        startDate = rangeMatch[1];
+        endDate = rangeMatch[2];
+      }
 
-       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-       let currentDate = '';
-       
-       for (let i = 0; i < lines.length; i++) {
-         const line = lines[i];
-         if (/^\d{4}-\d{2}-\d{2}$/.test(line)) {
-           currentDate = line;
-           continue;
-         }
-         
-         const timeMatch = line.match(/^(\d{2}:\d{2}:\d{2})/);
-         if (timeMatch && currentDate) {
-           const match = line.match(/^(\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+([+-][0-9,]+\.[0-9]{2})\s+([0-9,]+\.[0-9]{2})\s*(.*?)$/);
-           if (match) {
-             const time = match[1];
-             const date = `${currentDate} ${time}`;
-             const month = currentDate.substring(0, 7);
-             const abstract = match[7];
-             const amountStr = match[9].replace(/,/g, '');
-             const amountNum = parseFloat(amountStr);
-             const type = amountNum < 0 ? '支出' : '收入';
-             const amount = Math.abs(amountNum);
-             const channel = match[11] || '';
-             const counterparty = channel ? `${abstract}-${channel}` : abstract;
-             
-             transactions.push({ date, month, type, amount, counterparty });
-           }
-         }
-       }
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      let currentDate = '';
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (/^\d{4}-\d{2}-\d{2}$/.test(line)) {
+          currentDate = line;
+          continue;
+        }
+
+        const timeMatch = line.match(/^(\d{2}:\d{2}:\d{2})/);
+        if (timeMatch && currentDate) {
+          const match = line.match(/^(\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+([+-][0-9,]+\.[0-9]{2})\s+([0-9,]+\.[0-9]{2})\s*(.*?)$/);
+          if (match) {
+            const time = match[1];
+            const date = `${currentDate} ${time}`;
+            const month = currentDate.substring(0, 7);
+            const abstract = match[7];
+            const amountStr = match[9].replace(/,/g, '');
+            const amountNum = parseFloat(amountStr);
+            const type = amountNum < 0 ? '支出' : '收入';
+            const amount = Math.abs(amountNum);
+            const channel = match[11] || '';
+            const counterparty = channel ? `${abstract}-${channel}` : abstract;
+
+            transactions.push({ date, month, type, amount, counterparty });
+          }
+        }
+      }
     } else if (source === '农商银行') {
-       const nameMatch = text.match(/户名：(.*?)\s+/);
-       if (nameMatch) {
-           name = nameMatch[1];
-       }
-       const cardMatch = text.match(/账号\/卡号：(.*?)\s+/);
-       if (cardMatch) {
-           cardNumber = cardMatch[1];
-       }
-       const rangeMatch = text.match(/起止日期:(.*?)\s+到\s+(.*?)\s+/);
-       if (rangeMatch) {
-           startDate = rangeMatch[1];
-           endDate = rangeMatch[2];
-       }
+      const nameMatch = text.match(/户名：(.*?)\s+/);
+      if (nameMatch) {
+        name = nameMatch[1];
+      }
+      const cardMatch = text.match(/账号\/卡号：(.*?)\s+/);
+      if (cardMatch) {
+        cardNumber = cardMatch[1];
+      }
+      const rangeMatch = text.match(/起止日期:(.*?)\s+到\s+(.*?)\s+/);
+      if (rangeMatch) {
+        startDate = rangeMatch[1];
+        endDate = rangeMatch[2];
+      }
 
-       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-       const blocks: Array<{ date: string; lines: string[] }> = [];
-       let currentBlock: { date: string; lines: string[] } | null = null;
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      const blocks: Array<{ date: string; lines: string[] }> = [];
+      let currentBlock: { date: string; lines: string[] } | null = null;
 
-       for (let i = 0; i < lines.length; i++) {
-         const line = lines[i];
-         
-         if (/^\d{4}-\d{2}-\d{2}$/.test(line)) {
-           const nextLine = lines[i + 1] || '';
-           if (/^\d{2}:\d{2}:\d{2}\b/.test(nextLine)) {
-             if (currentBlock) blocks.push(currentBlock);
-             currentBlock = {
-               date: line,
-               lines: []
-             };
-             continue;
-           }
-         }
-         
-         if (currentBlock) {
-           if (line.includes('广东顺德农村商业银行') || line.includes('账户/卡明细信息') || line.includes('起止日期') || line.includes('交易时间') || line.startsWith('————') || line.startsWith('累计存入笔数') || line.startsWith('总交易笔数') || line.startsWith('END') || line.startsWith('打印机构')) {
-             continue;
-           }
-           currentBlock.lines.push(line);
-         }
-       }
-       if (currentBlock) blocks.push(currentBlock);
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
 
-       for (const block of blocks) {
-         const dateOnly = block.date;
-         const blockText = block.lines.join(' ');
-         
-         const match = blockText.match(/^(\d{2}:\d{2}:\d{2})\s+(\S+)\s+([+-][0-9,]+\.[0-9]{2})\s+(.*?)$/);
-         if (match) {
-           const time = match[1];
-           const date = `${dateOnly} ${time}`;
-           const month = dateOnly.substring(0, 7);
-           const amountStr = match[3].replace(/,/g, '');
-           const amountNum = parseFloat(amountStr);
-           const type = amountNum < 0 ? '支出' : '收入';
-           const amount = Math.abs(amountNum);
-           const remainder = match[4].trim();
-           
-           const balanceMatch = remainder.match(/\s([0-9,]+\.[0-9]{2})\s+(\S+渠道|核心渠道|网上渠道|快捷渠道|自助渠道|柜面渠道|其他渠道)\s+(\S+)\s*(.*?)$/);
-           
-           let counterparty = '';
-           if (balanceMatch) {
-             const balance = balanceMatch[1];
-             const channel = balanceMatch[2];
-             const summary = balanceMatch[3];
-             const memo = balanceMatch[4];
-             const opponentText = remainder.substring(0, remainder.indexOf(balanceMatch[0])).trim();
-             const nameAndBank = opponentText.replace(/\b\d+(\s+\d+)?\b/g, '').trim().replace(/\s+/g, ' ');
-             
-             counterparty = nameAndBank || opponentText || summary;
-             if (channel && channel !== '核心渠道') {
-               counterparty += ` (${channel})`;
-             }
-           } else {
-             counterparty = remainder.split(/\s+/)[0] || '未知';
-           }
-           
-           counterparty = counterparty.replace(/\s*\/\s*$/, '').trim();
-           transactions.push({ date, month, type, amount, counterparty });
-         }
-       }
+        if (/^\d{4}-\d{2}-\d{2}$/.test(line)) {
+          const nextLine = lines[i + 1] || '';
+          if (/^\d{2}:\d{2}:\d{2}\b/.test(nextLine)) {
+            if (currentBlock) blocks.push(currentBlock);
+            currentBlock = {
+              date: line,
+              lines: []
+            };
+            continue;
+          }
+        }
+
+        if (currentBlock) {
+          if (line.includes('广东顺德农村商业银行') || line.includes('账户/卡明细信息') || line.includes('起止日期') || line.includes('交易时间') || line.startsWith('————') || line.startsWith('累计存入笔数') || line.startsWith('总交易笔数') || line.startsWith('END') || line.startsWith('打印机构')) {
+            continue;
+          }
+          currentBlock.lines.push(line);
+        }
+      }
+      if (currentBlock) blocks.push(currentBlock);
+
+      for (const block of blocks) {
+        const dateOnly = block.date;
+        const blockText = block.lines.join(' ');
+
+        const match = blockText.match(/^(\d{2}:\d{2}:\d{2})\s+(\S+)\s+([+-][0-9,]+\.[0-9]{2})\s+(.*?)$/);
+        if (match) {
+          const time = match[1];
+          const date = `${dateOnly} ${time}`;
+          const month = dateOnly.substring(0, 7);
+          const amountStr = match[3].replace(/,/g, '');
+          const amountNum = parseFloat(amountStr);
+          const type = amountNum < 0 ? '支出' : '收入';
+          const amount = Math.abs(amountNum);
+          const remainder = match[4].trim();
+
+          const balanceMatch = remainder.match(/\s([0-9,]+\.[0-9]{2})\s+(\S+渠道|核心渠道|网上渠道|快捷渠道|自助渠道|柜面渠道|其他渠道)\s+(\S+)\s*(.*?)$/);
+
+          let counterparty = '';
+          if (balanceMatch) {
+            const balance = balanceMatch[1];
+            const channel = balanceMatch[2];
+            const summary = balanceMatch[3];
+            const memo = balanceMatch[4];
+            const opponentText = remainder.substring(0, remainder.indexOf(balanceMatch[0])).trim();
+            const nameAndBank = opponentText.replace(/\b\d+(\s+\d+)?\b/g, '').trim().replace(/\s+/g, ' ');
+
+            counterparty = nameAndBank || opponentText || summary;
+            if (channel && channel !== '核心渠道') {
+              counterparty += ` (${channel})`;
+            }
+          } else {
+            counterparty = remainder.split(/\s+/)[0] || '未知';
+          }
+
+          counterparty = counterparty.replace(/\s*\/\s*$/, '').trim();
+          transactions.push({ date, month, type, amount, counterparty });
+        }
+      }
     }
-    
+
     transactions.sort((a, b) => a.date.localeCompare(b.date));
     if (transactions.length > 0) {
-        const toDateOnly = (d: string) => (d.length >= 10 ? d.substring(0, 10) : d);
-        if (!startDate) startDate = toDateOnly(transactions[0].date);
-        if (!endDate) endDate = toDateOnly(transactions[transactions.length - 1].date);
+      const toDateOnly = (d: string) => (d.length >= 10 ? d.substring(0, 10) : d);
+      if (!startDate) startDate = toDateOnly(transactions[0].date);
+      if (!endDate) endDate = toDateOnly(transactions[transactions.length - 1].date);
     }
-    
+
     // 按降序排列记录
     transactions.reverse();
 
@@ -921,11 +920,11 @@ export class StatementService {
             const counterparty = isOtherType
               ? '/'
               : this.extractWechatCounterparty(
-                  amountLine
-                    .slice(amountLine.indexOf(amountMatch[0]) + amountMatch[0].length)
-                    .trim(),
-                  blockLines.slice(amountLineIdx + 1),
-                );
+                amountLine
+                  .slice(amountLine.indexOf(amountMatch[0]) + amountMatch[0].length)
+                  .trim(),
+                blockLines.slice(amountLineIdx + 1),
+              );
             transactions.push({ date: dateTime, month, type, amount, counterparty });
           }
         }
