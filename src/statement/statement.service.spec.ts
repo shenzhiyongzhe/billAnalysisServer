@@ -83,4 +83,10 @@ describe('StatementService', () => {
       });
     });
   });
+
+  describe('parsePdfText', () => {
+    it('should reject when parsing invalid pdf buffer', async () => {
+      await expect((service as any).parsePdfText(Buffer.from('invalid pdf'))).rejects.toThrow();
+    });
+  });
 });

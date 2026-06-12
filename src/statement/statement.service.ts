@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, BadRequestException, ForbiddenException,
 import { PrismaService } from '../prisma.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PDFParse, PasswordException } from 'pdf-parse';
+import { Worker } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -69,13 +70,67 @@ export class StatementService {
   }
 
   private async parsePdfText(buffer: Buffer, password?: string): Promise<string> {
-    const parser = new PDFParse({ data: buffer, password });
-    try {
-      const result = await parser.getText();
-      return result.text;
-    } finally {
-      await parser.destroy();
-    }
+    const workerCode = `
+      const { parentPort } = require('worker_threads');
+      const { PDFParse } = require('pdf-parse');
+
+      if (!parentPort) throw new Error('Must run as worker');
+
+      parentPort.on('message', async (message) => {
+        try {
+          const { buffer, password } = message;
+          const parser = new PDFParse({ data: Buffer.from(buffer), password });
+          try {
+            const result = await parser.getText();
+            parentPort.postMessage({ success: true, text: result.text });
+          } finally {
+            await parser.destroy();
+          }
+        } catch (error) {
+          parentPort.postMessage({
+            success: false,
+            error: {
+              name: error.name || 'Error',
+              message: error.message || String(error),
+              stack: error.stack
+            }
+          });
+        }
+      });
+    `;
+
+    return new Promise<string>((resolve, reject) => {
+      const worker = new Worker(workerCode, { eval: true });
+      worker.postMessage({ buffer, password });
+
+      worker.on('message', (res) => {
+        worker.terminate();
+        if (res.success) {
+          resolve(res.text);
+        } else {
+          const errObj = res.error;
+          if (errObj.name === 'PasswordException') {
+            reject(new PasswordException(errObj.message));
+          } else {
+            const err = new Error(errObj.message);
+            err.name = errObj.name;
+            err.stack = errObj.stack;
+            reject(err);
+          }
+        }
+      });
+
+      worker.on('error', (err) => {
+        worker.terminate();
+        reject(err);
+      });
+
+      worker.on('exit', (code) => {
+        if (code !== 0) {
+          reject(new Error("Worker stopped with exit code " + code));
+        }
+      });
+    });
   }
 
   async processAndSaveFile(userId: number, buffer: Buffer, originalname: string): Promise<number> {
@@ -138,7 +193,7 @@ export class StatementService {
         source = '支付宝';
       } else if (text.includes('招商银行交易流水')) {
         source = '招商银行';
-      } else if (text.includes('广东顺德农村商业银行股份有限公司')) {
+      } else if (text.includes('农村商业银行股份有限公司')) {
         source = '农商银行';
       } else if (text.includes('中国工商银行借记账户历史明细')) {
         source = '工商银行';
@@ -203,6 +258,49 @@ export class StatementService {
           status: 'done',
         },
       });
+
+      // 将解析数据同步传到另一个服务器上
+      try {
+        const wechatUser = await this.prisma.wechatUser.findUnique({
+          where: { id: userId },
+          select: { nickname: true, openid: true },
+        });
+
+        const queryServerUrl = process.env.QUERY_SERVER_URL || 'http://localhost:8001';
+        const targetUrl = `${queryServerUrl}/persons/query-record`;
+
+        const response = await fetch(targetUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': 'bill_query_record_secret_key_2026',
+          },
+          body: JSON.stringify({
+            name: parsedData.summary.name,
+            end_of_id: parsedData.summary.idNumber ? parsedData.summary.idNumber.slice(-6) : null,
+            first_querior: wechatUser?.nickname,
+            first_querior_id: wechatUser?.openid,
+          }),
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          this.logger.error(`Failed to send query record to external server: ${response.status} ${text}`);
+        } else {
+          this.logger.log(`Successfully sent query record for user ${userId} to external server`);
+        }
+      } catch (apiErr) {
+        this.logger.error('Error sending query record to external server:', apiErr);
+      }
+
+      // 解析成功并存入数据库后，清理本地文件
+      try {
+        if (fs.existsSync(filePath)) {
+          await fs.promises.unlink(filePath);
+        }
+      } catch (unlinkErr) {
+        this.logger.error(`Failed to delete uploaded file ${filePath}:`, unlinkErr);
+      }
     } catch (err) {
       if (err instanceof PasswordException) {
         this.logger.warn(`PDF is password protected for record ${recordId}`);

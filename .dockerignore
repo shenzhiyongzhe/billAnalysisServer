@@ -4,7 +4,6 @@ dist
 .gitignore
 .env
 .env.*
-!.env.example
 uploads
 coverage
 *.log
