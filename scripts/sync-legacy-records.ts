@@ -15,7 +15,7 @@ const pool = new Pool({ connectionString });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
-
+//test
 // Helper to parse command-line arguments
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -115,8 +115,8 @@ async function main() {
     console.log(`\nProcessing batch ${Math.floor(i / options.batchSize) + 1}/${Math.ceil(records.length / options.batchSize)} (records ${i + 1} to ${Math.min(i + options.batchSize, records.length)})...`);
 
     const promises = batch.map(async (record) => {
-      const summary = (record.summaryJson && typeof record.summaryJson === 'object') 
-        ? (record.summaryJson as any) 
+      const summary = (record.summaryJson && typeof record.summaryJson === 'object')
+        ? (record.summaryJson as any)
         : {};
 
       const name = summary.name || '未知';

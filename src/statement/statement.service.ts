@@ -153,6 +153,7 @@ export class StatementService {
     if (originalname.includes('微信')) source = '微信';
     else if (originalname.includes('支付宝')) source = '支付宝';
     else if (originalname.includes('招商')) source = '招商银行';
+    else if (originalname.includes('交通')) source = '交通银行';
     else if (originalname.includes('工商') || originalname.includes('工行')) source = '工商银行';
     else if (originalname.includes('农商') || originalname.includes('农村商业')) source = '农商银行';
 
@@ -193,6 +194,8 @@ export class StatementService {
         source = '支付宝';
       } else if (text.includes('招商银行交易流水')) {
         source = '招商银行';
+      } else if (text.includes('交通银行个人客户交易清单')) {
+        source = '交通银行';
       } else if (text.includes('农村商业银行股份有限公司')) {
         source = '农商银行';
       } else if (text.includes('中国工商银行借记账户历史明细')) {
@@ -200,10 +203,20 @@ export class StatementService {
       }
 
       if (!source) {
-        throw new BadRequestException('不支持的账单格式，请上传正确的微信、支付宝、招商银行、工商银行或农商银行交易流水。');
+        throw new BadRequestException('不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行或农商银行交易流水。');
       }
 
       const parsedData = this.extractData(text, source);
+
+      if (parsedData.transactions.length === 0) {
+        this.logger.warn(
+          `Parsed 0 transactions for record ${recordId} (${source}, ${originalname})`,
+        );
+      } else {
+        this.logger.log(
+          `Parsed ${parsedData.transactions.length} transactions for record ${recordId} (${source})`,
+        );
+      }
 
       // upsert statementUser
       let statementUserId: number | null = null;
@@ -682,29 +695,39 @@ export class StatementService {
         transactions.push({ date, month, type, amount, counterparty });
       }
     } else if (source === '招商银行') {
-      const nameMatch = text.match(/户\s*名：(.*?)\s/);
+      const nameMatch = text.match(/户\s*名[：:]\s*([^\s\n]+)/);
       if (nameMatch) {
         name = nameMatch[1];
       }
-      const lines = text.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        const match = line.match(/^(\d{4}-\d{2}-\d{2})\s+[A-Z]+\s+(-?[0-9,]+\.[0-9]{2})\s+[0-9,]+\.[0-9]{2}(.*?)$/);
-        if (match) {
-          const date = match[1];
-          const month = date.substring(0, 7);
-          const amountStr = match[2].replace(/,/g, '');
-          const amountNum = parseFloat(amountStr);
-          const type = amountNum < 0 ? '支出' : '收入';
-          const amount = Math.abs(amountNum);
-
-          const remainder = match[3];
-          const counterpartyMatch = remainder.match(/支付(.*?)$|收款(.*?)$|转账(.*?)$/);
-          const counterparty = counterpartyMatch ? (counterpartyMatch[1] || counterpartyMatch[2] || counterpartyMatch[3] || '招行商户').trim() : remainder.trim();
-
-          transactions.push({ date, month, type, amount, counterparty });
-        }
+      const cardMatch = text.match(/账号[：:]\s*([\d*]+)/);
+      if (cardMatch) {
+        cardNumber = cardMatch[1];
       }
+      const rangeMatch = text.match(/(\d{4}-\d{2}-\d{2})\s*--\s*(\d{4}-\d{2}-\d{2})/);
+      if (rangeMatch) {
+        startDate = rangeMatch[1];
+        endDate = rangeMatch[2];
+      }
+      transactions.push(...this.parseCmbTransactions(text));
+    } else if (source === '交通银行') {
+      const nameMatch = text.match(/Account Name:\s*([^\s\n]+)/);
+      if (nameMatch) {
+        name = nameMatch[1];
+      }
+      const cardMatch = text.match(/交通银行个人客户交易清单\s*\n\s*(\d{10,})/);
+      if (cardMatch) {
+        cardNumber = cardMatch[1];
+      }
+      const headerDates = text.match(/(\d{4}-\d{2}-\d{2})/g) || [];
+      const queryDates = headerDates
+        .slice(0, 20)
+        .filter((d, i, arr) => arr.indexOf(d) === i)
+        .sort();
+      if (queryDates.length >= 2) {
+        startDate = queryDates[0];
+        endDate = queryDates[queryDates.length - 1];
+      }
+      transactions.push(...this.parseBocomTransactions(text));
     } else if (source === '工商银行') {
       const nameMatch = text.match(/户名：(.*?)\s+/);
       if (nameMatch) {
@@ -866,6 +889,174 @@ export class StatementService {
       summary: { id: '', source, name, idNumber, cardNumber, startDate, endDate, totalIncome, totalExpenditure, selfIncome, selfExpenditure },
       transactions
     };
+  }
+
+  private isCmbTransactionLine(line: string): boolean {
+    return /^\d{4}-\d{2}-\d{2}\s+CNY\s+/.test(line);
+  }
+
+  private shouldSkipCmbNoiseLine(line: string): boolean {
+    return (
+      line.startsWith('--') ||
+      /^\d+\/\d+$/.test(line) ||
+      line.includes('记账日期') ||
+      line.includes('Transaction Statement') ||
+      line.includes('招商银行交易流水') ||
+      line.includes('Transaction Statement of China Merchants Bank') ||
+      line.includes('Date Currency') ||
+      line.includes('Amount Balance') ||
+      line.includes('Transaction Type') ||
+      line.includes('Counter Party') ||
+      line.includes('温馨提示') ||
+      line.includes('www.cmbchina') ||
+      line.includes('Verification Code') ||
+      line.includes('Account Type') ||
+      line.includes('Account No') ||
+      line.includes('Sub Branch') ||
+      line === 'Name' ||
+      line === 'Date' ||
+      line.startsWith('Account ')
+    );
+  }
+
+  private dedupeTransactions(transactions: Transaction[]): Transaction[] {
+    const seen = new Set<string>();
+    const result: Transaction[] = [];
+    for (const tx of transactions) {
+      const key = `${tx.date}|${tx.type}|${tx.amount}|${tx.counterparty}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(tx);
+    }
+    return result;
+  }
+
+  private parseCmbTransactions(text: string): Transaction[] {
+    const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+    const mergedLines: string[] = [];
+
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!this.isCmbTransactionLine(line)) {
+        i++;
+        continue;
+      }
+
+      let merged = line;
+      i++;
+      while (i < lines.length) {
+        const next = lines[i];
+        if (this.isCmbTransactionLine(next) || this.shouldSkipCmbNoiseLine(next)) {
+          break;
+        }
+        merged += next;
+        i++;
+      }
+      mergedLines.push(merged);
+    }
+
+    const rowRe =
+      /^(\d{4}-\d{2}-\d{2})\s+CNY\s+(-?[0-9,]+\.[0-9]{2})\s+[0-9,]+\.[0-9]{2}\s+(.+)$/;
+
+    const transactions: Transaction[] = [];
+    for (const line of mergedLines) {
+      const match = line.match(rowRe);
+      if (!match) continue;
+
+      const date = match[1];
+      const month = date.substring(0, 7);
+      const amountNum = parseFloat(match[2].replace(/,/g, ''));
+      const type: '收入' | '支出' = amountNum < 0 ? '支出' : '收入';
+      const amount = Math.abs(amountNum);
+
+      const remainder = match[3].trim();
+      const spaceIdx = remainder.indexOf(' ');
+      const counterparty =
+        spaceIdx >= 0 ? remainder.slice(spaceIdx + 1).trim() : remainder;
+
+      transactions.push({
+        date,
+        month,
+        type,
+        amount,
+        counterparty: counterparty || '未知',
+      });
+    }
+
+    return this.dedupeTransactions(transactions);
+  }
+
+  private parseBocomTransactions(text: string): Transaction[] {
+    const transactions: Transaction[] = [];
+    const lines = text.split('\n');
+    let buffer = '';
+
+    const tryParseBuffer = (raw: string) => {
+      const line = raw.replace(/\s+/g, ' ').trim();
+      const match = line.match(
+        /^(\d{4}-\d{2}-\d{2})\s+(.+)\s+([0-9,]+\.[0-9]{2})\s+([0-9,]+\.[0-9]{2})\s+(.+?)\s+(贷\s*Cr|借\s*Dr)\s*$/i,
+      );
+      if (!match) return false;
+
+      const date = match[1];
+      const month = date.substring(0, 7);
+      const counterparty = match[2].trim();
+      const amount = Math.abs(parseFloat(match[4].replace(/,/g, '')));
+      const summary = match[5].trim();
+      const dcFlag = match[6];
+      const type: '收入' | '支出' = /贷/.test(dcFlag) ? '收入' : '支出';
+
+      transactions.push({
+        date,
+        month,
+        type,
+        amount,
+        counterparty: counterparty || summary || '未知',
+      });
+      return true;
+    };
+
+    const isSkippableLine = (line: string) =>
+      !line ||
+      line.startsWith('--') ||
+      line.includes('Trans Date') ||
+      line.includes('交易日期') ||
+      line.includes('Bank of Communications') ||
+      line.includes('交通银行个人客户交易清单') ||
+      line.includes('Query Result') ||
+      line.includes('Account Name') ||
+      line.includes('Account/Card No') ||
+      /^\d{10,}$/.test(line);
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (isSkippableLine(line)) continue;
+
+      if (/^\d{4}-\d{2}-\d{2}\s/.test(line)) {
+        if (buffer && tryParseBuffer(buffer)) {
+          buffer = '';
+        }
+        buffer = line;
+        if (tryParseBuffer(buffer)) {
+          buffer = '';
+        }
+        continue;
+      }
+
+      if (buffer) {
+        buffer += line;
+        if (tryParseBuffer(buffer)) {
+          buffer = '';
+        }
+      }
+    }
+
+    if (buffer) {
+      tryParseBuffer(buffer);
+    }
+
+    return transactions;
   }
 
   private parseWechatTransactions(text: string): Transaction[] {
