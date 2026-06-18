@@ -186,21 +186,8 @@ export class StatementService {
     try {
       const text = await this.parsePdfText(buffer, password);
 
-      // 解析后用文本内容精确判断来源 (使用固定头部特征字符串，避免跨行交易流水中出现对方银行名称导致误判)
-      let source: string | null = null;
-      if (text.includes('微信支付交易明细证明')) {
-        source = '微信';
-      } else if (text.includes('支付宝支付科技有限公司')) {
-        source = '支付宝';
-      } else if (text.includes('招商银行交易流水')) {
-        source = '招商银行';
-      } else if (text.includes('交通银行个人客户交易清单')) {
-        source = '交通银行';
-      } else if (text.includes('农村商业银行股份有限公司')) {
-        source = '农商银行';
-      } else if (text.includes('中国工商银行借记账户历史明细')) {
-        source = '工商银行';
-      }
+      // 解析后用文本内容精确判断来源，优先匹配账单标题，避免交易对手方名称误判来源。
+      const source = this.detectSourceFromText(text);
 
       if (!source) {
         throw new BadRequestException('不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行或农商银行交易流水。');
@@ -633,6 +620,36 @@ export class StatementService {
   }
 
   // --- Parsing logic ---
+  private detectSourceFromText(text: string): string | null {
+    const headerText = text.split(/\r?\n/).slice(0, 30).join('\n');
+
+    if (headerText.includes('微信支付交易明细证明')) {
+      return '微信';
+    }
+
+    if (headerText.includes('招商银行交易流水')) {
+      return '招商银行';
+    }
+
+    if (headerText.includes('交通银行个人客户交易清单')) {
+      return '交通银行';
+    }
+
+    if (headerText.includes('中国工商银行借记账户历史明细')) {
+      return '工商银行';
+    }
+
+    if (/农村商业银行股份有限公司\s+账户\/卡明细信息/.test(headerText)) {
+      return '农商银行';
+    }
+
+    if (/支付宝支付科技有限公司\s+交易流水证明/.test(headerText)) {
+      return '支付宝';
+    }
+
+    return null;
+  }
+
   private extractData(text: string, source: string): StatementData {
     let name = '未知';
     let idNumber = '';

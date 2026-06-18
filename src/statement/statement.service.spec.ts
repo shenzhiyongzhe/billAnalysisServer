@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { StatementService } from './statement.service';
+import { StatementService, Transaction } from './statement.service';
 import { PrismaService } from '../prisma.service';
 
 describe('StatementService', () => {
@@ -84,9 +84,65 @@ describe('StatementService', () => {
     });
   });
 
+  describe('detectSourceFromText', () => {
+    const detect = (text: string) =>
+      (service as unknown as { detectSourceFromText(t: string): string | null }).detectSourceFromText(text);
+
+    it('prefers CMB statement header over Alipay counterparty text', () => {
+      const text = [
+        '招商银行交易流水',
+        'Transaction Statement of China Merchants Bank',
+        '记账日期 货币 交易金额 联机余额 交易摘要 对手信息',
+        '2025-07-16 CNY 800.00 927.54 银联代付 支付宝支付科技有限公司',
+      ].join('\n');
+
+      expect(detect(text)).toBe('招商银行');
+    });
+
+    it('detects Alipay from the statement title near the beginning', () => {
+      const text = [
+        '编号: 2026052000085004132820654681680069189554',
+        '支付宝支付科技有限公司 交易流水证明',
+        '兹证明:xx(证件号码:xxxx)在其支付宝账号xxxx中明细信息如下:',
+      ].join('\n');
+
+      expect(detect(text)).toBe('支付宝');
+    });
+
+    it('does not detect Alipay from counterparty text alone', () => {
+      const text = [
+        '未知账单',
+        '记账日期 货币 交易金额 联机余额 交易摘要 对手信息',
+        '2025-07-16 CNY 800.00 927.54 银联代付 支付宝支付科技有限公司',
+      ].join('\n');
+
+      expect(detect(text)).toBeNull();
+    });
+
+    it('detects rural commercial bank from the account detail title', () => {
+      const text = [
+        '广东顺德农村商业银行股份有限公司',
+        '账户/卡明细信息',
+        '账号/卡号：6223222020253306 户名：xxxx 币种：CNY',
+      ].join('\n');
+
+      expect(detect(text)).toBe('农商银行');
+    });
+
+    it('does not detect rural commercial bank from bank name alone', () => {
+      const text = [
+        '未知账单',
+        '对方行 广东顺德农村商业银行股份有限公司',
+        '2025-06-04 10:34:43 转账 -5000.00',
+      ].join('\n');
+
+      expect(detect(text)).toBeNull();
+    });
+  });
+
   describe('parseCmbTransactions', () => {
     const parse = (text: string) =>
-      (service as unknown as { parseCmbTransactions(t: string): unknown[] }).parseCmbTransactions(text);
+      (service as unknown as { parseCmbTransactions(t: string): Transaction[] }).parseCmbTransactions(text);
 
     it('parses CMB row and splits counterparty from transaction type', () => {
       const txs = parse('2025-06-15 CNY -45.00 18,099.10 银联快捷支付 微信转账');
