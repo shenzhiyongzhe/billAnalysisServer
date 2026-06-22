@@ -137,7 +137,10 @@ export class StatementService {
     // ① 校验用户并原子扣减次数
     const updated = await this.prisma.wechatUser.updateMany({
       where: { id: userId, remainingQueries: { gt: 0 } },
-      data: { remainingQueries: { decrement: 1 } },
+      data: { 
+        remainingQueries: { decrement: 1 },
+        totalQueries: { increment: 1 },
+      },
     });
     if (updated.count === 0) {
       const exists = await this.prisma.wechatUser.findUnique({
@@ -318,7 +321,10 @@ export class StatementService {
         }),
         this.prisma.wechatUser.update({
           where: { id: userId },
-          data: { remainingQueries: { increment: 1 } },
+          data: { 
+            remainingQueries: { increment: 1 },
+            totalQueries: { decrement: 1 },
+          },
         }),
       ]);
     }

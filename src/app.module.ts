@@ -6,6 +6,7 @@ import { AuthModule } from './auth/auth.module';
 import { PrismaModule } from './prisma.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AdminModule } from './admin/admin.module';
+import { ShareModule } from './share/share.module';
 
 @Module({
   imports: [
@@ -13,9 +14,11 @@ import { AdminModule } from './admin/admin.module';
     StatementModule, 
     AuthModule,
     AdminModule,
+    ShareModule,
     ScheduleModule.forRoot()
   ],
   controllers: [AppController],
   providers: [AppService],
 })
 export class AppModule {}
+

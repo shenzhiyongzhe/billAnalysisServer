@@ -13,10 +13,23 @@ model WechatUser {
   nickname         String   @default("微信用户")
   avatar           String   @default("/static/default-avatar.png")
   remainingQueries Int      @default(500)
+  totalQueries     Int      @default(0)
+  shareCount       Int      @default(0)
   level            Int      @default(1)
   records          QueryRecord[]
   session          UserSession?
+  shareRecords     ShareRecord[] @relation("SharerRelation")
+  openRecords      ShareRecord[] @relation("OpenerRelation")
   createdAt        DateTime @default(now())
+}
+
+model ShareRecord {
+  id        Int      @id @default(autoincrement())
+  sharerId  Int
+  sharer    WechatUser @relation("SharerRelation", fields: [sharerId], references: [id], onDelete: Cascade)
+  openerId  Int?
+  opener    WechatUser? @relation("OpenerRelation", fields: [openerId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
 }
 
 model UserSession {
