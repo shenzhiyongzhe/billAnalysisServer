@@ -55,11 +55,25 @@ export class AdminService {
       },
     });
 
-    return records.map((record) => ({
-      id: record.id,
-      statementUser: record.statementUser?.name || null,
-      idNumber: record.statementUserId,
-      createdAt: record.createdAt,
-    }));
+    return records.map((record) => {
+      let summary: any = null;
+      if (record.summaryJson) {
+        if (typeof record.summaryJson === 'string') {
+          try {
+            summary = JSON.parse(record.summaryJson);
+          } catch (e) {
+            summary = null;
+          }
+        } else {
+          summary = record.summaryJson;
+        }
+      }
+      return {
+        id: record.id,
+        statementUser: record.statementUser?.name || null,
+        idNumber: summary?.idNumber || null,
+        createdAt: record.createdAt,
+      };
+    });
   }
 }
