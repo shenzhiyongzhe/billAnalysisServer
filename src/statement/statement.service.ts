@@ -51,6 +51,8 @@ export interface StatementResultMeta {
   nativePlace?: string;
   genderText?: string;
   age?: number;
+  firstQueryTime?: string | null;
+  queryCount?: number;
 }
 
 export interface StatementResultBundle {
@@ -563,8 +565,34 @@ export class StatementService {
   ): Promise<StatementResultBundle> {
     await this.assertRecordOwnership(id, userId);
     const data = await this.getPersistedData(id);
+    const summary = this.pickResultMeta(data.summary);
+
+    let firstQueryTime: Date | null = null;
+    let queryCount = 1;
+
+    const record = await this.prisma.queryRecord.findUnique({
+      where: { id },
+      select: { statementUserId: true },
+    });
+
+    if (record?.statementUserId) {
+      queryCount = await this.prisma.queryRecord.count({
+        where: { statementUserId: record.statementUserId },
+      });
+      const firstRecord = await this.prisma.queryRecord.findFirst({
+        where: { statementUserId: record.statementUserId },
+        orderBy: { createdAt: 'asc' },
+        select: { createdAt: true },
+      });
+      firstQueryTime = firstRecord ? firstRecord.createdAt : null;
+    }
+
     return {
-      summary: this.pickResultMeta(data.summary),
+      summary: {
+        ...summary,
+        firstQueryTime: firstQueryTime ? firstQueryTime.toISOString() : null,
+        queryCount,
+      },
       raw: data.transactions,
     };
   }

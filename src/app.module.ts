@@ -7,6 +7,7 @@ import { PrismaModule } from './prisma.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AdminModule } from './admin/admin.module';
 import { ShareModule } from './share/share.module';
+import { SystemConfigModule } from './system-config/system-config.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { ShareModule } from './share/share.module';
     AuthModule,
     AdminModule,
     ShareModule,
+    SystemConfigModule,
     ScheduleModule.forRoot()
   ],
   controllers: [AppController],

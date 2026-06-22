@@ -208,10 +208,17 @@ export class AuthService {
       const sequence = (countToday + 1).toString().padStart(4, '0');
       const displayId = dateStr + sequence;
 
+      // Fetch dynamic default remaining queries count from SystemConfig
+      const queriesConfig = await this.prisma.systemConfig.findUnique({
+        where: { key: 'default_remaining_queries' },
+      });
+      const defaultRemainingQueries = queriesConfig ? parseInt(queriesConfig.value, 10) : 500;
+
       user = await this.prisma.wechatUser.create({
         data: {
           openid,
           displayId,
+          remainingQueries: isNaN(defaultRemainingQueries) ? 500 : defaultRemainingQueries,
         },
       });
     }
