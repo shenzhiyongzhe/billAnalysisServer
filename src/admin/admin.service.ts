@@ -27,11 +27,25 @@ export class AdminService {
     });
   }
 
-  async getQueryRecords() {
+  async getQueryRecords(pageStr?: string, limitStr?: string) {
+    const page = pageStr ? parseInt(pageStr, 10) : 1;
+    const limit = limitStr ? parseInt(limitStr, 10) : 20;
+    const skip = (page - 1) * limit;
+
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
     const records = await this.prisma.queryRecord.findMany({
+      where: {
+        createdAt: {
+          gte: sevenDaysAgo,
+        },
+      },
       orderBy: {
         createdAt: 'desc',
       },
+      skip,
+      take: limit,
       include: {
         statementUser: {
           select: {
@@ -44,7 +58,7 @@ export class AdminService {
     return records.map((record) => ({
       id: record.id,
       statementUser: record.statementUser?.name || null,
-      statementUserId: record.statementUserId,
+      idNumber: record.statementUserId,
       createdAt: record.createdAt,
     }));
   }

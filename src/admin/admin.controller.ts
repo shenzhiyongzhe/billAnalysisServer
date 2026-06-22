@@ -6,6 +6,7 @@ import {
   Param,
   ParseIntPipe,
   UseGuards,
+  Query,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AdminGuard } from './admin.guard';
@@ -30,7 +31,10 @@ export class AdminController {
   }
 
   @Get('query-records')
-  async getQueryRecords() {
-    return this.adminService.getQueryRecords();
+  async getQueryRecords(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.adminService.getQueryRecords(page, limit);
   }
 }
