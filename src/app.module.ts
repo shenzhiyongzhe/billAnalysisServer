@@ -8,6 +8,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { AdminModule } from './admin/admin.module';
 import { ShareModule } from './share/share.module';
 import { SystemConfigModule } from './system-config/system-config.module';
+import { StatisticsModule } from './statistics/statistics.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { SystemConfigModule } from './system-config/system-config.module';
     AdminModule,
     ShareModule,
     SystemConfigModule,
+    StatisticsModule,
     ScheduleModule.forRoot()
   ],
   controllers: [AppController],

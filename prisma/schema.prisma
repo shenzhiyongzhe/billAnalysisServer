@@ -21,6 +21,8 @@ model WechatUser {
   shareRecords     ShareRecord[] @relation("SharerRelation")
   openRecords      ShareRecord[] @relation("OpenerRelation")
   createdAt        DateTime @default(now())
+  queryOperationLogs QueryOperationRecord[] @relation("TargetUserRelation")
+  adminOperationLogs QueryOperationRecord[] @relation("AdminUserRelation")
 }
 
 model ShareRecord {
@@ -70,4 +72,28 @@ model QueryRecord {
 model SystemConfig {
   key   String @id
   value String
+}
+
+model QueryOperationRecord {
+  id           Int        @id @default(autoincrement())
+  userId       Int
+  user         WechatUser @relation("TargetUserRelation", fields: [userId], references: [id], onDelete: Cascade)
+  adminId      Int?
+  admin        WechatUser? @relation("AdminUserRelation", fields: [adminId], references: [id], onDelete: SetNull)
+  oldQueries   Int
+  newQueries   Int
+  changeAmount Int
+  reason       String?    @default("管理员修改")
+  createdAt    DateTime   @default(now())
+}
+
+model DailyStatistics {
+  id             Int      @id @default(autoincrement())
+  date           DateTime @unique
+  todayQueries   Int      @default(0)
+  todayRecharges Int      @default(0)
+  totalQueries   Int      @default(0)
+  totalRecharges Int      @default(0)
+  avgQueriesPerDay Float  @default(0)
+  createdAt      DateTime @default(now())
 }
