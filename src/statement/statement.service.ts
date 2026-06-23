@@ -589,15 +589,14 @@ export class StatementService {
     });
 
     if (record?.statementUserId) {
-      queryCount = await this.prisma.queryRecord.count({
-        where: { statementUserId: record.statementUserId },
+      const statementUser = await this.prisma.statementUser.findUnique({
+        where: { id: record.statementUserId },
+        select: { queryCount: true, createdAt: true },
       });
-      const firstRecord = await this.prisma.queryRecord.findFirst({
-        where: { statementUserId: record.statementUserId },
-        orderBy: { createdAt: 'asc' },
-        select: { createdAt: true },
-      });
-      firstQueryTime = firstRecord ? firstRecord.createdAt : null;
+      if (statementUser) {
+        queryCount = statementUser.queryCount;
+        firstQueryTime = statementUser.createdAt;
+      }
     }
 
     return {
