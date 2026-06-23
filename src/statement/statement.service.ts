@@ -5,6 +5,7 @@ import { PDFParse, PasswordException } from 'pdf-parse';
 import { Worker } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 
 export interface StatementSummary {
   id: string;
@@ -136,6 +137,26 @@ export class StatementService {
   }
 
   async processAndSaveFile(userId: number, buffer: Buffer, originalname: string): Promise<number> {
+    const md5 = crypto.createHash('md5').update(buffer).digest('hex');
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+
+    // 0. Check if a duplicate successful record exists in the last 3 days
+    const existing = await this.prisma.queryRecord.findFirst({
+      where: {
+        userId,
+        status: 'done',
+        filePath: {
+          startsWith: md5,
+        },
+        createdAt: { gte: threeDaysAgo },
+      },
+    });
+
+    if (existing) {
+      this.logger.log(`Found duplicate statement upload by hash for user ${userId}, reusing record ${existing.id}`);
+      return existing.id;
+    }
+
     // ① 校验用户并原子扣减次数
     const updated = await this.prisma.wechatUser.updateMany({
       where: { id: userId, remainingQueries: { gt: 0 } },
@@ -163,7 +184,7 @@ export class StatementService {
     else if (originalname.includes('农商') || originalname.includes('农村商业')) source = '农商银行';
 
     // ③ 写文件 + 立即创建 pending 记录，同步返回 id
-    const fileName = `${Date.now()}_${originalname}`;
+    const fileName = `${md5}_${originalname}`;
     const filePath = path.join(this.uploadsDir, fileName);
     await fs.promises.writeFile(filePath, buffer);
 
@@ -297,14 +318,6 @@ export class StatementService {
         this.logger.error('Error sending query record to external server:', apiErr);
       }
 
-      // 解析成功并存入数据库后，清理本地文件
-      try {
-        if (fs.existsSync(filePath)) {
-          await fs.promises.unlink(filePath);
-        }
-      } catch (unlinkErr) {
-        this.logger.error(`Failed to delete uploaded file ${filePath}:`, unlinkErr);
-      }
     } catch (err) {
       if (err instanceof PasswordException) {
         this.logger.warn(`PDF is password protected for record ${recordId}`);
