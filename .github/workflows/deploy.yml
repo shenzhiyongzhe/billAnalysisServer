@@ -1,8 +1,14 @@
 # 构建并推送 ghcr.io/<owner>/bill-analysis-server ，再通过 SSH 在服务器拉取并重启。
 #
-# Variables：DEPLOY_HOST, DEPLOY_USER, DEPLOY_PATH（Settings → Secrets and variables → Actions → Variables）
-# Secrets：DEPLOY_SSH_PASSWORD
-# 未设置 DEPLOY_HOST 时跳过 deploy，仅构建推送镜像。
+# Variables（Settings → Secrets and variables → Actions → Variables）：
+#   服务器1：DEPLOY_HOST, DEPLOY_USER, DEPLOY_PATH
+#   服务器2：DEPLOY_HOST_2, DEPLOY_USER_2, DEPLOY_PATH_2（可选，留空则跳过）
+#
+# Secrets：
+#   服务器1：DEPLOY_SSH_PASSWORD
+#   服务器2：DEPLOY_SSH_PASSWORD_2（可选，留空则跳过）
+#
+# 未设置 DEPLOY_HOST 时跳过全部 deploy，仅构建推送镜像。
 # 私有镜像需在服务器 docker login ghcr.io（见 deploy/README.md）。
 
 name: Deploy billAnalysisServer
@@ -60,7 +66,8 @@ jobs:
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
 
-  deploy:
+  # 并行部署到服务器1（始终执行）
+  deploy-server-1:
     needs: build-and-push
     runs-on: ubuntu-latest
     if: |
@@ -75,6 +82,34 @@ jobs:
           host: ${{ vars.DEPLOY_HOST }}
           username: ${{ vars.DEPLOY_USER }}
           password: ${{ secrets.DEPLOY_SSH_PASSWORD }}
+          envs: IMAGE_FULL_SHA,DEPLOY_PATH
+          script_stop: true
+          script: |
+            set -exo pipefail
+            cd "${DEPLOY_PATH}"
+            if [ ! -f .env ]; then
+              echo "Error: .env not found in ${DEPLOY_PATH}"
+              exit 1
+            fi
+            export DOCKER_IMAGE="${IMAGE_FULL_SHA}"
+            bash deploy/remote-deploy.sh
+
+  # 并行部署到服务器2（需配置 DEPLOY_HOST_2 等变量）
+  deploy-server-2:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: |
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
+      vars.DEPLOY_HOST_2 != ''
+    steps:
+      - uses: appleboy/ssh-action@v1.2.0
+        env:
+          IMAGE_FULL_SHA: ${{ needs.build-and-push.outputs.image_full_sha }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH_2 }}
+        with:
+          host: ${{ vars.DEPLOY_HOST_2 }}
+          username: ${{ vars.DEPLOY_USER_2 }}
+          password: ${{ secrets.DEPLOY_SSH_PASSWORD_2 }}
           envs: IMAGE_FULL_SHA,DEPLOY_PATH
           script_stop: true
           script: |

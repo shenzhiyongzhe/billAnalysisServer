@@ -39,17 +39,23 @@ PAT 需 `read:packages` 权限。
 
 | 名称 | 说明 |
 |------|------|
-| `DEPLOY_HOST` | SSH 主机 |
-| `DEPLOY_USER` | SSH 用户 |
-| `DEPLOY_PATH` | 服务器上的部署目录 |
+| `DEPLOY_HOST` | 服务器1 SSH 主机 |
+| `DEPLOY_USER` | 服务器1 SSH 用户 |
+| `DEPLOY_PATH` | 服务器1 上的部署目录 |
+| `DEPLOY_HOST_2` | 服务器2 SSH 主机（可选，留空则跳过服务器2） |
+| `DEPLOY_USER_2` | 服务器2 SSH 用户（可选） |
+| `DEPLOY_PATH_2` | 服务器2 上的部署目录（可选） |
 
-未设置 `DEPLOY_HOST` 时只构建推送镜像，不 SSH 部署。
+未设置 `DEPLOY_HOST` 时只构建推送镜像，不 SSH 部署；未设置 `DEPLOY_HOST_2` 时仅部署服务器1。
 
 **Secrets**：
 
 | 名称 | 说明 |
 |------|------|
-| `DEPLOY_SSH_PASSWORD` | SSH 密码 |
+| `DEPLOY_SSH_PASSWORD` | 服务器1 SSH 密码 |
+| `DEPLOY_SSH_PASSWORD_2` | 服务器2 SSH 密码（可选） |
+
+> 两台服务器的 `deploy-server-1` / `deploy-server-2` 两个 job **并行**执行（`needs: build-and-push`），互不阻塞；任意一台失败不影响另一台完成部署。
 
 （旧版 `SSH_HOST` / `PROJECT_PATH` / `DATABASE_URL` 等已不再使用，请改用上表并在服务器 `.env` 中配置数据库与微信。）
 
