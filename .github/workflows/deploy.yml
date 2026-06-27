@@ -106,11 +106,14 @@ jobs:
         env:
           IMAGE_FULL_SHA: ${{ needs.build-and-push.outputs.image_full_sha }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH_2 }}
+          # PostgreSQL 在 Docker 容器时需要：设置 DEPLOY_DOCKER_NETWORK_2 为 Docker 网络名（如 uniapp-network）
+          # PostgreSQL 在宿主机时留空
+          DOCKER_NETWORK: ${{ vars.DEPLOY_DOCKER_NETWORK_2 }}
         with:
           host: ${{ vars.DEPLOY_HOST_2 }}
           username: ${{ vars.DEPLOY_USER_2 }}
           password: ${{ secrets.DEPLOY_SSH_PASSWORD_2 }}
-          envs: IMAGE_FULL_SHA,DEPLOY_PATH
+          envs: IMAGE_FULL_SHA,DEPLOY_PATH,DOCKER_NETWORK
           script_stop: true
           script: |
             set -exo pipefail

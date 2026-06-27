@@ -2,6 +2,11 @@
 # 在部署机 DEPLOY_PATH 下执行：pull → prisma migrate deploy → compose up
 # 用法：export DOCKER_IMAGE=ghcr.io/.../bill-analysis-server:<sha>
 #       bash deploy/remote-deploy.sh
+#
+# 可选环境变量：
+#   DOCKER_NETWORK  PostgreSQL 所在的 Docker 网络名（如 uniapp-network）
+#                   PostgreSQL 在宿主机时留空，脚本自动用 --network host
+#                   PostgreSQL 在 Docker 容器时设置此变量，避免 compose run 网络问题
 set -exo pipefail
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
@@ -26,6 +31,16 @@ run_prisma_migrate() {
     npx prisma migrate deploy
 }
 
+run_prisma_migrate_docker_network() {
+  local db_url="$1"
+  local network="$2"
+  echo "migrate: docker run --network ${network} (PostgreSQL in Docker container)" >&2
+  docker run --rm --network "${network}" \
+    -e "DATABASE_URL=${db_url}" \
+    "${DOCKER_IMAGE}" \
+    npx prisma migrate deploy
+}
+
 normalize_host_pg_url() {
   printf '%s' "$1" \
     | sed -e 's/@localhost:/@127.0.0.1:/' -e 's/@host\.docker\.internal:/@127.0.0.1:/'
@@ -39,6 +54,9 @@ if uses_host_postgresql "$DATABASE_URL_VAL"; then
   MIGRATE_DATABASE_URL="$(normalize_host_pg_url "$DATABASE_URL_VAL")"
   echo "migrate: docker run --network host (DATABASE_URL → 127.0.0.1 on deploy host)" >&2
   run_prisma_migrate "${MIGRATE_DATABASE_URL}"
+elif [ -n "${DOCKER_NETWORK:-}" ]; then
+  # PostgreSQL 在 Docker 容器中，通过指定网络直接连接，避免 docker compose run 的网络继承问题
+  run_prisma_migrate_docker_network "${DATABASE_URL_VAL}" "${DOCKER_NETWORK}"
 else
   docker compose -f "${COMPOSE_FILE}" run -T --rm app npx prisma migrate deploy
 fi
