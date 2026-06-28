@@ -2,7 +2,9 @@
 #
 # Variables（Settings → Secrets and variables → Actions → Variables）：
 #   服务器1：DEPLOY_HOST, DEPLOY_USER, DEPLOY_PATH
+#              DEPLOY_DOCKER_NETWORK   PostgreSQL 在 Docker 容器时设置（如 uniapp-network），宿主机留空
 #   服务器2：DEPLOY_HOST_2, DEPLOY_USER_2, DEPLOY_PATH_2（可选，留空则跳过）
+#              DEPLOY_DOCKER_NETWORK_2  同上，服务器2专用
 #
 # Secrets：
 #   服务器1：DEPLOY_SSH_PASSWORD
@@ -78,11 +80,14 @@ jobs:
         env:
           IMAGE_FULL_SHA: ${{ needs.build-and-push.outputs.image_full_sha }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          # PostgreSQL 在 Docker 容器时需要：设置 DEPLOY_DOCKER_NETWORK 为 Docker 网络名（如 uniapp-network）
+          # PostgreSQL 在宿主机时留空
+          DOCKER_NETWORK: ${{ vars.DEPLOY_DOCKER_NETWORK }}
         with:
           host: ${{ vars.DEPLOY_HOST }}
           username: ${{ vars.DEPLOY_USER }}
           password: ${{ secrets.DEPLOY_SSH_PASSWORD }}
-          envs: IMAGE_FULL_SHA,DEPLOY_PATH
+          envs: IMAGE_FULL_SHA,DEPLOY_PATH,DOCKER_NETWORK
           script_stop: true
           script: |
             set -exo pipefail
