@@ -108,24 +108,20 @@ jobs:
       vars.DEPLOY_HOST_2 != ''
     steps:
       - uses: appleboy/ssh-action@v1.2.0
-        env:
-          IMAGE_FULL_SHA: ${{ needs.build-and-push.outputs.image_full_sha }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH_2 }}
-          # PostgreSQL 在 Docker 容器时需要：设置 DEPLOY_DOCKER_NETWORK_2 为 Docker 网络名（如 uniapp-network）
-          # PostgreSQL 在宿主机时留空
-          DOCKER_NETWORK: ${{ vars.DEPLOY_DOCKER_NETWORK_2 }}
         with:
           host: ${{ vars.DEPLOY_HOST_2 }}
           username: ${{ vars.DEPLOY_USER_2 }}
           password: ${{ secrets.DEPLOY_SSH_PASSWORD_2 }}
-          envs: IMAGE_FULL_SHA,DEPLOY_PATH,DOCKER_NETWORK
           script_stop: true
           script: |
             set -exo pipefail
-            cd "${DEPLOY_PATH}"
+            cd "${{ vars.DEPLOY_PATH_2 }}"
             if [ ! -f .env ]; then
-              echo "Error: .env not found in ${DEPLOY_PATH}"
+              echo "Error: .env not found in ${{ vars.DEPLOY_PATH_2 }}"
               exit 1
             fi
-            export DOCKER_IMAGE="${IMAGE_FULL_SHA}"
+            # 直接在 script 中 export，避免 envs 机制传递空值的歧义
+            export DOCKER_IMAGE="${{ needs.build-and-push.outputs.image_full_sha }}"
+            export DOCKER_NETWORK="${{ vars.DEPLOY_DOCKER_NETWORK_2 }}"
+            echo "[workflow] DOCKER_NETWORK=${DOCKER_NETWORK}" >&2
             bash deploy/remote-deploy.sh
