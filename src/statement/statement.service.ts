@@ -7,6 +7,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 
+const QUERY_SERVER_URL = process.env.QUERY_SERVER_URL || 'https://www.xinde8888.com/api/query_info/persons/query-record';
+
 export interface StatementSummary {
   id: string;
   source: string;
@@ -208,7 +210,7 @@ export class StatementService {
 
     // ④ 后台异步解析 PDF（不阻塞当前请求）
     setImmediate(() => {
-      void this.parseAndUpdateRecord(recordId, userId, buffer, originalname, filePath, source);
+      void this.parseAndUpdateRecord(recordId, userId, buffer, originalname);
     });
 
     return recordId;
@@ -218,8 +220,6 @@ export class StatementService {
     userId: number,
     buffer: Buffer,
     originalname: string,
-    filePath: string,
-    quickSource: string,
     password?: string,
   ): Promise<void> {
     try {
@@ -305,9 +305,7 @@ export class StatementService {
           select: { nickname: true, openid: true },
         });
 
-        const queryServerUrl = "https://www.xinde8888.com/api/query_info/persons/query-record";
-
-        const response = await fetch(queryServerUrl, {
+        const response = await fetch(QUERY_SERVER_URL, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -439,7 +437,7 @@ export class StatementService {
     const buffer = fs.readFileSync(filePath);
     // 异步执行解析，带上密码
     setImmediate(() => {
-      void this.parseAndUpdateRecord(recordId, userId, buffer, path.basename(filePath), filePath, record.source, password);
+      void this.parseAndUpdateRecord(recordId, userId, buffer, path.basename(filePath), password);
     });
   }
 
@@ -558,28 +556,6 @@ export class StatementService {
     return result;
   }
 
-  private computeMonthly(transactions: Transaction[]) {
-    const map = new Map<string, { income: number, expenditure: number }>();
-
-    transactions.forEach(t => {
-      if (t.type !== '不计收支') {
-        const entry = map.get(t.month) || { income: 0, expenditure: 0 };
-        if (t.type === '收入') entry.income += t.amount;
-        if (t.type === '支出') entry.expenditure += t.amount;
-        map.set(t.month, entry);
-      }
-    });
-
-    const result = Array.from(map.entries()).map(([month, stats]) => ({
-      month,
-      income: stats.income,
-      expenditure: stats.expenditure,
-      balance: stats.income - stats.expenditure,
-    }));
-    result.sort((a, b) => a.month.localeCompare(b.month));
-    return result;
-  }
-
   private pickResultMeta(summary: StatementSummary): StatementResultMeta {
     const {
       totalIncome: _ti,
@@ -665,10 +641,10 @@ export class StatementService {
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async handleCron() {
     this.logger.debug('Running daily cleanup job for old records and files.');
-    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
 
     const oldRecords = await this.prisma.queryRecord.findMany({
-      where: { createdAt: { lt: threeDaysAgo } }
+      where: { createdAt: { lt: sixtyDaysAgo } }
     });
 
     for (const record of oldRecords) {
@@ -679,7 +655,7 @@ export class StatementService {
     }
 
     await this.prisma.queryRecord.deleteMany({
-      where: { createdAt: { lt: threeDaysAgo } }
+      where: { createdAt: { lt: sixtyDaysAgo } }
     });
     this.logger.debug(`Cleaned up ${oldRecords.length} old records.`);
   }
