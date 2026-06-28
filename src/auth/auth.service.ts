@@ -64,6 +64,7 @@ export class AuthService {
     avatar: string;
     remainingQueries: number;
     level: number;
+    monthlyCardExpiry?: Date | null;
   }): PublicUser {
     return {
       id: user.id,
@@ -72,6 +73,7 @@ export class AuthService {
       avatar: user.avatar,
       remainingQueries: user.remainingQueries,
       level: user.level,
+      monthlyCardExpiry: user.monthlyCardExpiry ? user.monthlyCardExpiry.toISOString() : null,
     };
   }
 

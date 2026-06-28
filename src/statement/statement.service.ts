@@ -157,21 +157,34 @@ export class StatementService {
       return existing.id;
     }
 
-    // ① 校验用户并原子扣减次数
-    const updated = await this.prisma.wechatUser.updateMany({
-      where: { id: userId, remainingQueries: { gt: 0 } },
-      data: { 
-        remainingQueries: { decrement: 1 },
-        totalQueries: { increment: 1 },
-      },
+    // ① 校验用户并根据月卡状态决定是否扣减次数
+    const user = await this.prisma.wechatUser.findUnique({
+      where: { id: userId },
+      select: { id: true, remainingQueries: true, monthlyCardExpiry: true },
     });
-    if (updated.count === 0) {
-      const exists = await this.prisma.wechatUser.findUnique({
+    if (!user) throw new NotFoundException('User not found');
+
+    const now = new Date();
+    const hasMonthlyCard = user.monthlyCardExpiry != null && user.monthlyCardExpiry > now;
+
+    if (hasMonthlyCard) {
+      // 月卡有效：仅累加 totalQueries，不扣减 remainingQueries
+      await this.prisma.wechatUser.update({
         where: { id: userId },
-        select: { id: true },
+        data: { totalQueries: { increment: 1 } },
       });
-      if (!exists) throw new NotFoundException('User not found');
-      throw new BadRequestException('剩余分析次数不足');
+    } else {
+      // 无月卡：原子扣减次数
+      const updated = await this.prisma.wechatUser.updateMany({
+        where: { id: userId, remainingQueries: { gt: 0 } },
+        data: {
+          remainingQueries: { decrement: 1 },
+          totalQueries: { increment: 1 },
+        },
+      });
+      if (updated.count === 0) {
+        throw new BadRequestException('剩余分析次数不足');
+      }
     }
 
     // ② 从文件名快速判断来源（不解析 PDF），用于立即建记录
@@ -328,7 +341,14 @@ export class StatementService {
         return;
       }
       this.logger.error(`Background parse failed for record ${recordId}:`, err);
-      // 解析失败：标记 failed，并退还次数
+      // 解析失败：标记 failed，并视月卡状态决定是否退还次数
+      const failedUser = await this.prisma.wechatUser.findUnique({
+        where: { id: userId },
+        select: { monthlyCardExpiry: true },
+      });
+      const failNow = new Date();
+      const userHadMonthlyCard = failedUser?.monthlyCardExpiry != null && failedUser.monthlyCardExpiry > failNow;
+
       await Promise.all([
         this.prisma.queryRecord.update({
           where: { id: recordId },
@@ -336,10 +356,9 @@ export class StatementService {
         }),
         this.prisma.wechatUser.update({
           where: { id: userId },
-          data: { 
-            remainingQueries: { increment: 1 },
-            totalQueries: { decrement: 1 },
-          },
+          data: userHadMonthlyCard
+            ? { totalQueries: { decrement: 1 } }                                       // 月卡用户：只回退计数
+            : { remainingQueries: { increment: 1 }, totalQueries: { decrement: 1 } },  // 普通用户：退还次数
         }),
       ]);
     }

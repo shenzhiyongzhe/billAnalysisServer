@@ -5,6 +5,7 @@ export interface PublicUser {
   avatar: string;
   remainingQueries: number;
   level: number;
+  monthlyCardExpiry?: string | null; // 月卡到期时间 ISO 字符串，null/undefined 表示无月卡
 }
 
 export interface AuthTokensResponse {

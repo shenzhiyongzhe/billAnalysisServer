@@ -16,6 +16,7 @@ model WechatUser {
   totalQueries     Int      @default(0)
   shareCount       Int      @default(0)
   level            Int      @default(1)
+  monthlyCardExpiry DateTime? // 月卡到期时间，null 表示无月卡
   records          QueryRecord[]
   session          UserSession?
   shareRecords     ShareRecord[] @relation("SharerRelation")
@@ -75,16 +76,17 @@ model SystemConfig {
 }
 
 model QueryOperationRecord {
-  id           Int        @id @default(autoincrement())
-  userId       Int
-  user         WechatUser @relation("TargetUserRelation", fields: [userId], references: [id], onDelete: Cascade)
-  adminId      Int?
-  admin        WechatUser? @relation("AdminUserRelation", fields: [adminId], references: [id], onDelete: SetNull)
-  oldQueries   Int
-  newQueries   Int
-  changeAmount Int
-  reason       String?    @default("管理员修改")
-  createdAt    DateTime   @default(now())
+  id            Int        @id @default(autoincrement())
+  userId        Int
+  user          WechatUser @relation("TargetUserRelation", fields: [userId], references: [id], onDelete: Cascade)
+  adminId       Int?
+  admin         WechatUser? @relation("AdminUserRelation", fields: [adminId], references: [id], onDelete: SetNull)
+  operationType String     @default("queries") // "queries" | "monthly_card"
+  oldQueries    Int
+  newQueries    Int
+  changeAmount  Int
+  reason        String?    @default("管理员修改")
+  createdAt     DateTime   @default(now())
 }
 
 model DailyStatistics {

@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Post,
   Put,
   Body,
   Param,
@@ -35,6 +36,15 @@ export class AdminController {
     @CurrentUserId() adminId: number,
   ) {
     return this.adminService.updateUserQueries(id, remainingQueries, adminId, reason);
+  }
+
+  @Post('users/:id/monthly-card')
+  async grantMonthlyCard(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('reason') reason: string,
+    @CurrentUserId() adminId: number,
+  ) {
+    return this.adminService.grantMonthlyCard(id, adminId, reason);
   }
 
   @Get('query-records')

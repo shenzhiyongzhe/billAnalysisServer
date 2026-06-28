@@ -7,6 +7,19 @@ export class AdminService {
 
   async getUsers() {
     return this.prisma.wechatUser.findMany({
+      select: {
+        id: true,
+        openid: true,
+        displayId: true,
+        nickname: true,
+        avatar: true,
+        remainingQueries: true,
+        totalQueries: true,
+        shareCount: true,
+        level: true,
+        monthlyCardExpiry: true,
+        createdAt: true,
+      },
       orderBy: {
         createdAt: 'desc',
       },
@@ -34,10 +47,45 @@ export class AdminService {
         data: {
           userId,
           adminId,
+          operationType: 'queries',
           oldQueries,
           newQueries: remainingQueries,
           changeAmount,
           reason: reason || '手动充值',
+        },
+      });
+
+      return updatedUser;
+    });
+  }
+
+  async grantMonthlyCard(userId: number, adminId?: number, reason?: string) {
+    const user = await this.prisma.wechatUser.findUnique({
+      where: { id: userId },
+    });
+    if (!user) {
+      throw new NotFoundException(`User with ID ${userId} not found`);
+    }
+
+    // 充値起 30 天后到期
+    const now = new Date();
+    const expiry = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    return this.prisma.$transaction(async (tx) => {
+      const updatedUser = await tx.wechatUser.update({
+        where: { id: userId },
+        data: { monthlyCardExpiry: expiry },
+      });
+
+      await tx.queryOperationRecord.create({
+        data: {
+          userId,
+          adminId,
+          operationType: 'monthly_card',
+          oldQueries: user.remainingQueries,
+          newQueries: user.remainingQueries, // 次数不变
+          changeAmount: 0,
+          reason: reason || '充値月卡',
         },
       });
 
