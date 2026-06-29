@@ -41,10 +41,11 @@ export class AdminController {
   @Post('users/:id/monthly-card')
   async grantMonthlyCard(
     @Param('id', ParseIntPipe) id: number,
+    @Body('months') months: number | undefined,
     @Body('reason') reason: string,
     @CurrentUserId() adminId: number,
   ) {
-    return this.adminService.grantMonthlyCard(id, adminId, reason);
+    return this.adminService.grantMonthlyCard(id, months ?? 1, adminId, reason);
   }
 
   @Get('query-records')

@@ -7,7 +7,22 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 
-const QUERY_SERVER_URL = process.env.QUERY_SERVER_URL || 'https://www.xinde8888.com/api/query_info/persons/query-record';
+const DEFAULT_QUERY_SERVER_BASE = 'https://www.xinde8888.com/api/query_info';
+
+function resolveQueryServerBaseUrl(): string {
+  const explicit = process.env.QUERY_SERVER_BASE_URL?.trim();
+  if (explicit) return explicit.replace(/\/$/, '');
+  return DEFAULT_QUERY_SERVER_BASE;
+}
+
+const QUERY_SERVER_BASE_URL = resolveQueryServerBaseUrl();
+
+function queryServerUrl(path: string, searchParams?: URLSearchParams): string {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const url = `${QUERY_SERVER_BASE_URL}${normalizedPath}`;
+  const query = searchParams?.toString();
+  return query ? `${url}?${query}` : url;
+}
 
 export interface StatementSummary {
   id: string;
@@ -34,6 +49,8 @@ export interface Transaction {
   type: '收入' | '支出' | '不计收支';
   amount: number;
   counterparty: string;
+  bizType?: string;
+  product?: string;
 }
 
 export interface StatementData {
@@ -56,6 +73,7 @@ export interface StatementResultMeta {
   age?: number;
   firstQueryTime?: string | null;
   queryCount?: number;
+  isHighRisk?: boolean;
 }
 
 export interface StatementResultBundle {
@@ -304,7 +322,7 @@ export class StatementService {
           select: { nickname: true, openid: true },
         });
 
-        const response = await fetch(QUERY_SERVER_URL, {
+        const response = await fetch(queryServerUrl('/persons/query-record'), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -566,6 +584,41 @@ export class StatementService {
     return meta;
   }
 
+  private extractEndOfId(summary: StatementSummary): string | null {
+    if (summary.idNumber) return summary.idNumber.slice(-6);
+    if (summary.cardNumber) return summary.cardNumber.slice(-4);
+    return null;
+  }
+
+  private async checkHighRisk(summary: StatementSummary): Promise<boolean> {
+    if (!summary.name || summary.name === '未知') return false;
+
+    const endOfId = this.extractEndOfId(summary);
+    const params = new URLSearchParams({ name: summary.name });
+    if (endOfId) params.set('end_of_id', endOfId);
+
+    const url = queryServerUrl('/web-api/records/check-high-risk', params);
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        const text = await response.text();
+        this.logger.warn(`check-high-risk failed: ${response.status} ${text}`);
+        return false;
+      }
+
+      const data = await response.json();
+      return data?.result?.isHighRisk === true;
+    } catch (err) {
+      this.logger.warn('check-high-risk request error:', err);
+      return false;
+    }
+  }
+
   async getResultBundle(
     id: number,
     userId: number,
@@ -598,6 +651,7 @@ export class StatementService {
         ...summary,
         firstQueryTime: firstQueryTime ? firstQueryTime.toISOString() : null,
         queryCount,
+        isHighRisk: await this.checkHighRisk(data.summary),
       },
       raw: data.transactions,
     };
@@ -1120,75 +1174,149 @@ export class StatementService {
     const transactions: Transaction[] = [];
     const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
 
-    let i = 0;
-    while (i < lines.length) {
-      if (/^\d{4}-\d{2}-\d{2}$/.test(lines[i])) {
-        const date = lines[i];
-        const month = date.substring(0, 7);
-        let blockStart = i + 1;
-        let dateTime = date;
-        if (
-          blockStart < lines.length &&
-          /^\d{2}:\d{2}:\d{2}$/.test(lines[blockStart])
-        ) {
-          dateTime = `${date} ${lines[blockStart]}`;
-          blockStart++;
-        }
+    // 1. Find all transaction anchors (ID start index, date index, time index)
+    const anchors: Array<{
+      idStartIdx: number;
+      dateIdx: number;
+      timeIdx: number;
+      date: string;
+      time: string;
+      transactionId: string;
+    }> = [];
 
-        // Collect block lines until next date or page marker
-        const blockLines: string[] = [];
-        let j = blockStart;
-        while (
-          j < lines.length &&
-          !/^\d{4}-\d{2}-\d{2}$/.test(lines[j]) &&
-          !lines[j].startsWith('-- ')
-        ) {
-          blockLines.push(lines[j]);
-          j++;
-        }
+    for (let idx = 0; idx < lines.length; idx++) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(lines[idx])) {
+        if (idx + 1 < lines.length && /^\d{2}:\d{2}:\d{2}$/.test(lines[idx + 1])) {
+          const txDate = lines[idx];
+          const txTime = lines[idx + 1];
 
-        const blockText = blockLines.join(' ');
-
-        // Find the line that contains the amount
-        const amountLineIdx = blockLines.findIndex(l => /\d+\.\d{2}/.test(l));
-        if (amountLineIdx >= 0) {
-          const amountLine = blockLines[amountLineIdx];
-          const isOtherType = /^其他\s/.test(amountLine.trim());
-
-          // 收/支/其他 在金额行；中文无法用 \b，故按金额行判断
-          let type: '收入' | '支出' | '不计收支' = '支出';
-          if (isOtherType) type = '不计收支';
-          else if (/\s收入(?:\s|\/)/.test(amountLine) || /\s收入\s/.test(blockText)) type = '收入';
-          else if (/\s支出\s/.test(amountLine) || /\s支出\s/.test(blockText)) type = '支出';
-          else if (/不计/.test(blockText)) type = '不计收支';
-          const amountMatch = amountLine.match(/(\d+\.\d{2})/);
-          if (amountMatch) {
-            const amount = parseFloat(amountMatch[1]);
-            
-            // Extract the original details from before the amount line if isOtherType is true
-            const otherDetail = (isOtherType && amountLineIdx > 0)
-              ? blockLines.slice(0, amountLineIdx).join('').replace(/\s+/g, '').trim()
-              : '/';
-
-            const counterparty = isOtherType
-              ? (otherDetail || '/')
-              : this.extractWechatCounterparty(
-                amountLine
-                  .slice(amountLine.indexOf(amountMatch[0]) + amountMatch[0].length)
-                  .trim(),
-                blockLines.slice(amountLineIdx + 1),
-              );
-            transactions.push({ date: dateTime, month, type, amount, counterparty });
+          // Find preceding transaction ID lines
+          let idStartIdx = idx;
+          let combinedId = '';
+          for (let k = 1; k <= 3; k++) {
+            const prevIdx = idx - k;
+            if (prevIdx >= 0 && /^[0-9]+$/.test(lines[prevIdx])) {
+              combinedId = lines[prevIdx] + combinedId;
+              idStartIdx = prevIdx;
+            } else {
+              if (combinedId.length > 0) break;
+            }
           }
-        }
 
-        i = j;
-      } else {
-        i++;
+          // Validate transaction ID matches the date (allowing 1 day tolerance)
+          const isMatchedId = this.validateWechatTxId(combinedId, txDate);
+          
+          anchors.push({
+            idStartIdx: isMatchedId ? idStartIdx : idx,
+            dateIdx: idx,
+            timeIdx: idx + 1,
+            date: txDate,
+            time: txTime,
+            transactionId: isMatchedId ? combinedId : ''
+          });
+        }
+      }
+    }
+
+    // 2. Extract transaction blocks based on adjacent anchor boundaries
+    for (let idx = 0; idx < anchors.length; idx++) {
+      const anchor = anchors[idx];
+      const nextAnchor = anchors[idx + 1];
+      const blockEndIdx = nextAnchor ? nextAnchor.idStartIdx : lines.length;
+
+      // Extract raw lines after the time index and before the next transaction starts
+      const rawBlockLines = lines.slice(anchor.timeIdx + 1, blockEndIdx);
+
+      // Filter out footer/header noise
+      const blockLines = rawBlockLines.filter(line => {
+        if (line.startsWith('-- ')) return false;
+        if (line.includes('微信支付交易明细证明')) return false;
+        if (line.includes('兹证明')) return false;
+        if (line.includes('具体交易明细')) return false;
+        if (line.includes('交易单号 交易时间')) return false;
+        if (line.startsWith('说明：')) return false;
+        return true;
+      });
+
+      const blockText = blockLines.join(' ');
+      const amountLineIdx = blockLines.findIndex(l => /\d+\.\d{2}/.test(l));
+
+      if (amountLineIdx >= 0) {
+        const amountLine = blockLines[amountLineIdx];
+        const hasOther = /(?:^|\s|\/)其他(?:\s|\/|$)/.test(blockText);
+        const hasIncome = /\s收入(?:\s|\/)/.test(amountLine) || /\s收入\s/.test(blockText);
+        const hasExpense = /\s支出\s/.test(amountLine) || /\s支出\s/.test(blockText);
+        const isOtherType = hasOther && !hasIncome && !hasExpense;
+
+        let type: '收入' | '支出' | '不计收支' = '支出';
+        if (isOtherType) type = '不计收支';
+        else if (hasIncome) type = '收入';
+        else if (hasExpense) type = '支出';
+        else if (/不计/.test(blockText)) type = '不计收支';
+
+        const amountMatch = amountLine.match(/(\d+\.\d{2})/);
+        if (amountMatch) {
+          const amount = parseFloat(amountMatch[1]);
+          const dateTime = `${anchor.date} ${anchor.time}`;
+          const month = anchor.date.substring(0, 7);
+
+          let counterparty = '';
+          let bizType = '';
+          let product = '';
+          if (isOtherType) {
+            const parts = blockText.split(/(?:^|\s|\/)其他(?:\s|\/|$)/);
+            counterparty = parts[0].replace(/\s+/g, '').trim();
+            if (!counterparty) counterparty = '/';
+            bizType = '其他';
+            product = blockLines.slice(0, amountLineIdx).join('').trim();
+          } else {
+            bizType = this.extractWechatBizType(amountLine);
+            product = blockLines.slice(0, amountLineIdx).join('').trim();
+            counterparty = this.extractWechatCounterparty(
+              amountLine
+                .slice(amountLine.indexOf(amountMatch[0]) + amountMatch[0].length)
+                .trim(),
+              blockLines.slice(amountLineIdx + 1),
+            );
+          }
+
+          transactions.push({ date: dateTime, month, type, amount, counterparty, bizType, product });
+        }
       }
     }
 
     return transactions;
+  }
+
+  private validateWechatTxId(id: string, dateStr: string): boolean {
+    if (id.length < 24 || id.length > 40) return false;
+
+    const dates = [dateStr];
+    const d = new Date(dateStr);
+    if (!isNaN(d.getTime())) {
+      const prev = new Date(d);
+      prev.setDate(d.getDate() - 1);
+      dates.push(prev.toISOString().split('T')[0]);
+
+      const next = new Date(d);
+      next.setDate(d.getDate() + 1);
+      dates.push(next.toISOString().split('T')[0]);
+    }
+
+    return dates.some(dt => {
+      const yyyymmdd = dt.replace(/-/g, '');
+      const yymmdd = yyyymmdd.substring(2);
+      return id.includes(yyyymmdd) || id.includes(yymmdd);
+    });
+  }
+
+  private extractWechatBizType(amountLine: string): string {
+    const match = amountLine.match(/^(.+?)\s+(?:收入|支出|其他|不计收支)/);
+    if (match) {
+      return match[1].replace(/\s+/g, '').trim();
+    }
+    const fallback = amountLine.match(/^(商户消费|微信红包(?:\(单发\))?|转账|扫二维码付款|二维码收款|零钱通|提现|退款)/);
+    return fallback ? fallback[1].replace(/\s+/g, '').trim() : '';
   }
 
   private extractWechatCounterparty(sameLine: string, nextLines: string[]): string {

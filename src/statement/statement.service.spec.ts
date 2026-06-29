@@ -80,6 +80,122 @@ describe('StatementService', () => {
         type: '收入',
         amount: 30,
         counterparty: '少风哥',
+        bizType: '转账',
+      });
+    });
+
+    it('extracts bizType and product for merchant consumption', () => {
+      const text = [
+        '4200003106202605121867725259',
+        '2026-05-12',
+        '02:03:15',
+        '京东商城',
+        '商户消费 支出 128.50 京东 /',
+      ].join('\n');
+
+      const txs = parse(text) as Transaction[];
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        type: '支出',
+        amount: 128.5,
+        bizType: '商户消费',
+        product: '京东商城',
+      });
+    });
+
+    it('extracts bizType for wechat red packet', () => {
+      const text = [
+        '1000050001202605120234991344877',
+        '2026-05-12',
+        '20:00:00',
+        '微信红包（单发） 支出 8.88 发给张三 /',
+      ].join('\n');
+
+      const txs = parse(text) as Transaction[];
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        type: '支出',
+        amount: 8.88,
+        bizType: '微信红包（单发）',
+      });
+    });
+
+    it('extracts bizType 其他 and product for lingqiantong', () => {
+      const text = [
+        '10001073012026051201337011622559',
+        '2026-05-12',
+        '01:22:34',
+        '零钱通转出-',
+        '到零钱',
+        '其他 零钱通 5.00 / /',
+      ].join('\n');
+
+      const txs = parse(text) as Transaction[];
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        type: '不计收支',
+        amount: 5,
+        bizType: '其他',
+        product: '零钱通转出-到零钱',
+        counterparty: '零钱通转出-到零钱',
+      });
+    });
+
+    it('parses 其他 type with counterparty on separate line and amount line starts with amount (e.g. withdrawal)', () => {
+      const text = [
+        '53110001222015202603063520602141',
+        '2026-03-06',
+        '05:39:04',
+        '零钱提现 其他 工商银行储',
+        '蓄卡(1338)',
+        '39.04 工商银行(13',
+        '38)',
+      ].join('\n');
+
+      const txs = parse(text);
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        date: '2026-03-06 05:39:04',
+        type: '不计收支',
+        amount: 39.04,
+        counterparty: '零钱提现',
+      });
+    });
+
+    it('parses 其他 type with counterparty and details on the same line as amount (e.g. Fenfu repayment)', () => {
+      const text = [
+        '53010002485131202602253285192059',
+        '2026-02-25',
+        '17:30:56',
+        '分付还款 其他 零钱 337.00 分付 41800008316202602',
+        '251894802832217',
+      ].join('\n');
+
+      const txs = parse(text);
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        date: '2026-02-25 17:30:56',
+        type: '不计收支',
+        amount: 337,
+        counterparty: '分付还款',
+      });
+    });
+
+    it('still parses normal income transfer when transaction type is 其他 (e.g. activity reward / refund)', () => {
+      const text = [
+        '4200003106202604043039652035',
+        '2026-04-04',
+        '22:21:47',
+        '其他 收入 / 0.68 活动奖励_09_20404197',
+      ].join('\n');
+
+      const txs = parse(text);
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        date: '2026-04-04 22:21:47',
+        type: '收入',
+        amount: 0.68,
+        counterparty: '活动奖励_09_20404197',
       });
     });
   });
