@@ -13,12 +13,10 @@ COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 COMPOSE_UP_FILE="${COMPOSE_UP_FILE:-docker-compose.prod.yml}"
 
 : "${DOCKER_IMAGE:?Set DOCKER_IMAGE to ghcr.io/.../bill-analysis-server:tag}"
-: "${PYTHON_DOCKER_IMAGE:?Set PYTHON_DOCKER_IMAGE to ghcr.io/.../pdf-parser:tag}"
 
 # ── 诊断：打印关键环境变量 ──────────────────────────────────────────────
 echo "=== [DIAG] ENV CHECK ===" >&2
 echo "  DOCKER_IMAGE=${DOCKER_IMAGE}" >&2
-echo "  PYTHON_DOCKER_IMAGE=${PYTHON_DOCKER_IMAGE}" >&2
 echo "  COMPOSE_FILE=${COMPOSE_FILE}" >&2
 echo "  DOCKER_NETWORK=[${DOCKER_NETWORK:-}]  (empty=宿主机PG或未传入)" >&2
 echo "  DOCKER_NETWORK length=$(printf '%s' "${DOCKER_NETWORK:-}" | wc -c)" >&2
@@ -27,7 +25,7 @@ echo "  USER=$(whoami)" >&2
 # ──────────────────────────────────────────────────────────────────────────
 
 echo "=== [1/4] pull ===" >&2
-docker compose -f "${COMPOSE_FILE}" pull
+docker compose -f "${COMPOSE_FILE}" pull app
 
 echo "=== [2/4] prisma migrate deploy ===" >&2
 DATABASE_URL_VAL="$(
