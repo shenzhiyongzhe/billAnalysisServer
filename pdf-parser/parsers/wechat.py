@@ -2,101 +2,149 @@ import re
 from .base import BaseParser
 
 class WechatParser(BaseParser):
+    def is_wechat_merchant_id(self, val: str) -> bool:
+        return val == '/' or (len(val) >= 10 and bool(re.match(r'^[0-9a-zA-Z_\-]+$', val)))
+
+    def extract_wechat_counterparty(self, same_line: str, next_lines: list) -> str:
+        parts = []
+        if same_line:
+            tokens = same_line.split()
+            for token in tokens:
+                if token and self.is_wechat_merchant_id(token):
+                    break
+                if token:
+                    parts.append(token)
+                    
+        for line in next_lines:
+            line = line.strip()
+            if not line:
+                continue
+            if line == '/':
+                break
+            if self.is_wechat_merchant_id(line):
+                break
+            if line.startswith('--') or line.startswith('说明'):
+                break
+            parts.append(line)
+            
+        return "".join(parts).strip() or "未知"
+
     def parse(self):
         self.open_pdf()
         
-        # 1. Parse summary from first page text
-        first_page = self.pdf.pages[0]
-        text = first_page.extract_text() or ""
-        
+        # Extract text from all pages
+        all_text = ""
+        for page in self.pdf.pages:
+            all_text += (page.extract_text() or "") + "\n"
+            
+        # Parse summary from text
         name = "未知"
         id_number = ""
         start_date = ""
         end_date = ""
         
-        name_match = re.search(r'兹证明：(.*?)\（居民身份证：(.*?)\）', text)
+        name_match = re.search(r'兹证明：(.*?)\（居民身份证：(.*?)\）', all_text)
         if name_match:
             name = name_match.group(1).strip()
             id_number = name_match.group(2).strip()
             
-        date_range_match = re.search(r'起始时间：([\d\-\:\s]+)至([\d\-\:\s]+)', text)
+        date_range_match = re.search(r'起始时间：([\d\-\:\s]+)至([\d\-\:\s]+)', all_text)
         if date_range_match:
             start_date = self.parse_date(date_range_match.group(1))
             end_date = self.parse_date(date_range_match.group(2))
             
         transactions = []
+        lines = [l.strip() for l in all_text.split('\n') if l.strip()]
         
-        # 2. Extract tables page by page
-        for page in self.pdf.pages:
-            tables = page.extract_tables()
-            for table in tables:
-                for row in table:
-                    # A valid WeChat transaction row must have 9 columns
-                    if not row or len(row) < 9:
-                        continue
+        i = 0
+        while i < len(lines):
+            # Check if line contains date format YYYY-MM-DD
+            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', lines[i])
+            if date_match:
+                date_str = date_match.group(1)
+                month = date_str[:7]
+                
+                # Check for time in current line or next line
+                time_match = re.search(r'(\d{2}:\d{2}:\d{2})', lines[i])
+                block_start = i + 1
+                if not time_match and i + 1 < len(lines):
+                    time_match = re.search(r'(\d{2}:\d{2}:\d{2})', lines[i+1])
+                    if time_match:
+                        block_start = i + 2
                         
-                    # Skip header row
-                    if "交易时间" in str(row[0]):
-                        continue
-                        
-                    # Clean fields
-                    date_time = " ".join(str(row[0] or "").split()).strip() # replace newlines/tabs with space
+                time_str = time_match.group(1) if time_match else "00:00:00"
+                date_time = f"{date_str} {time_str}"
+                
+                # Collect block lines until next date or page marker
+                block_lines = [lines[i]]
+                j = block_start
+                while j < len(lines):
+                    if j > i + 1 and re.search(r'(\d{4}-\d{2}-\d{2})', lines[j]):
+                        break
+                    if lines[j].startswith("--- PAGE") or "微信支付交易明细证明" in lines[j] or "具体交易明细" in lines[j]:
+                        break
+                    block_lines.append(lines[j])
+                    j += 1
                     
-                    # Validate date_time format (should start with YYYY-MM-DD)
-                    if not re.match(r'^\d{4}-\d{2}-\d{2}', date_time):
-                        continue
-                        
-                    tx_type = " ".join(str(row[1] or "").split()).strip()
-                    opponents = " ".join(str(row[2] or "").split()).strip()
-                    product = " ".join(str(row[3] or "").split()).strip()
-                    flow_col = " ".join(str(row[4] or "").split()).strip()
-                    amount_str = str(row[5] or "").strip()
-                    pay_method = " ".join(str(row[6] or "").split()).strip()
+                amount_line = block_lines[0]
+                amount_match = re.search(r'(\d+\.\d{2})', amount_line)
+                if amount_match:
+                    amount = float(amount_match.group(1))
+                    block_text = " ".join(block_lines)
+                    is_other_type = "其他" in amount_line or "其他" in block_text
                     
-                    # Parse amount
-                    amount = self.clean_amount(amount_str)
-                    
-                    # Determine type (收入/支出/不计收支)
-                    # flow_col values are usually "收入", "支出", "其他"
                     type_val = "支出"
-                    if "其他" in flow_col:
+                    if is_other_type:
                         type_val = "不计收支"
-                    elif "收入" in flow_col:
+                    elif "收入" in block_text:
                         type_val = "收入"
-                    elif "支出" in flow_col:
+                    elif "支出" in block_text:
                         type_val = "支出"
-                    elif "不计" in flow_col:
+                    elif "不计" in block_text:
                         type_val = "不计收支"
                         
-                    # Reconstruct counterparty for "其他" type
-                    if type_val == "不计收支" and ("其他" in flow_col or opponents == "/"):
-                        # E.g. "零钱通转出-到零钱" or "信用卡还款-招商银行(1234)"
-                        parts = []
-                        if tx_type and tx_type != "/":
-                            parts.append(tx_type)
-                        if product and product != "/":
-                            parts.append(product)
+                    # Extract counterparty tokens
+                    tokens = []
+                    for line in block_lines:
+                        # Remove date and time to clean tokens
+                        line_clean = re.sub(r'\d{2}:\d{2}:\d{2}', '', line)
+                        line_clean = re.sub(r'\d{4}-\d{2}-\d{2}', '', line_clean)
+                        tokens.extend(line_clean.split())
                         
-                        if parts:
-                            counterparty = "-".join(parts)
-                        else:
-                            counterparty = opponents if opponents != "/" else "微信支付"
-                    else:
-                        counterparty = opponents
-                        if counterparty == "/" or not counterparty:
-                            counterparty = product if (product and product != "/") else tx_type
-                            
-                    # Clean up double dashes or trailing slashes in counterparty
-                    if counterparty:
-                        counterparty = re.sub(r'-+$', '', counterparty)
-                        counterparty = re.sub(r'^-+', '', counterparty)
-                        counterparty = counterparty.strip()
-                        if not counterparty:
-                            counterparty = "未知"
-                            
-                    date_only = date_time.split()[0]
-                    month = date_only[:7]
+                    keywords = {
+                        "二维码收款", "转账", "商户消费", "扫二维码付", "转入零钱通-", "零钱通转出-",
+                        "收入", "支出", "其他", "零钱", "零钱通", "银行卡", "来自零钱", "到零钱",
+                        "元", "币种：人民币", "单位：元", "/", "商户", "分付"
+                    }
                     
+                    counterparty_parts = []
+                    for t in tokens:
+                        if t == amount_match.group(1):
+                            continue
+                        if t in keywords or any(kw in t for kw in ["时间", "方式", "金额", "交易单", "商户单"]):
+                            continue
+                        if self.is_wechat_merchant_id(t) or t.isdigit():
+                            continue
+                        counterparty_parts.append(t)
+                        
+                    counterparty = "".join(counterparty_parts).strip()
+                    counterparty = re.sub(r'[\/\\()（）]+$', '', counterparty)
+                    
+                    # Special cases for transfers
+                    detail_match = re.search(r'(零钱通转出-\s*到零钱|转入零钱通-\s*来自零钱|零钱提现-\s*到银行卡|分付还款-\s*到分付|零钱充值-\s*来自银行卡)', block_text.replace(" ", ""))
+                    if detail_match:
+                        counterparty = detail_match.group(1)
+                    elif is_other_type:
+                        # For other types, try to match common patterns or fallback
+                        alt_match = re.search(r'(零钱通转出-|转入零钱通-|零钱提现|分付还款|零钱充值)', block_text.replace(" ", ""))
+                        if alt_match:
+                            counterparty = alt_match.group(1)
+                        if not counterparty or counterparty == "/":
+                            counterparty = "其他交易"
+                            
+                    if not counterparty or counterparty == "/":
+                        counterparty = "/"
+                        
                     transactions.append({
                         "date": date_time,
                         "month": month,
@@ -104,8 +152,11 @@ class WechatParser(BaseParser):
                         "amount": amount,
                         "counterparty": counterparty
                     })
-                    
-        # Sort chronologically, then reverse (descending order like original codebase)
+                i = j
+            else:
+                i += 1
+                
+        # Sort chronologically, then reverse
         transactions.sort(key=lambda x: x["date"])
         
         if transactions and not start_date:
@@ -115,7 +166,6 @@ class WechatParser(BaseParser):
             
         transactions.reverse()
         
-        # Calculate summary metrics (will be calculated in NestJS anyway, but we output it)
         total_income = sum(t["amount"] for t in transactions if t["type"] == "收入")
         total_expenditure = sum(t["amount"] for t in transactions if t["type"] == "支出")
         

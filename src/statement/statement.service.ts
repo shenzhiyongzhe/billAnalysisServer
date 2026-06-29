@@ -302,6 +302,7 @@ export class StatementService {
       }
 
       // 2. Fallback to local JS parsing if Python returned null
+      if (!parsedData) {
         const text = await this.parsePdfText(buffer, password);
         const detected = this.detectSourceFromText(text);
 

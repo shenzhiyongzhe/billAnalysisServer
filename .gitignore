@@ -7,3 +7,6 @@ node_modules
 unpackage/
 dist/
 uploads/
+/pdf-parser/parsers/__pycache__
+.venv
+Lib

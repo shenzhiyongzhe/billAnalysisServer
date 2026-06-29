@@ -1,7 +1,5 @@
 import re
 import pdfplumber
-from pypdf import PdfReader
-from pypdf.errors import PasswordError
 
 class BaseParser:
     def __init__(self, file_path: str, password: str = None):
