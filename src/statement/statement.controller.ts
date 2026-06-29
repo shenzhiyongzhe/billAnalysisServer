@@ -74,6 +74,11 @@ export class StatementController {
     return this.statementService.getCounterparties(parseInt(id, 10), userId);
   }
 
+  @Get(':id/risk-status')
+  getRiskStatus(@Param('id') id: string, @CurrentUserId() userId: number) {
+    return this.statementService.getRiskStatus(parseInt(id, 10), userId);
+  }
+
   @Get(':id/result')
   getResult(@Param('id') id: string, @CurrentUserId() userId: number) {
     return this.statementService.getResultBundle(parseInt(id, 10), userId);
