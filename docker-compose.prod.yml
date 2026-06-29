@@ -36,6 +36,26 @@ services:
       timeout: 5s
       retries: 3
       start_period: 40s
+
+  pdf-parser:
+    image: ${PYTHON_DOCKER_IMAGE:?Set PYTHON_DOCKER_IMAGE to ghcr.io/.../pdf-parser:tag}
+    container_name: pdf-parser
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks:
+      - uniapp-network
+    volumes:
+      - ./uploads:/app/uploads
+    environment:
+      UPLOADS_DIR: /app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 networks:
   uniapp-network:
     external: true

@@ -210,33 +210,112 @@ export class StatementService {
 
     // ④ 后台异步解析 PDF（不阻塞当前请求）
     setImmediate(() => {
-      void this.parseAndUpdateRecord(recordId, userId, buffer, originalname);
+      void this.parseAndUpdateRecord(recordId, userId, buffer, fileName);
     });
 
     return recordId;
   }
+  private async parseWithPythonService(
+    buffer: Buffer,
+    fileName: string,
+    password?: string,
+  ): Promise<StatementData | null> {
+    const parserUrl = process.env.PDF_PARSER_URL;
+    if (!parserUrl) {
+      this.logger.log('PDF_PARSER_URL is not configured, skipping Python parsing service.');
+      return null;
+    }
+
+    const isSharedMode = process.env.PDF_PARSER_MODE === 'shared';
+
+    try {
+      const url = isSharedMode ? `${parserUrl}/parse-path` : `${parserUrl}/parse`;
+      this.logger.log(`Calling Python parsing service at ${url} (mode: ${isSharedMode ? 'shared' : 'multipart'})...`);
+
+      let response: Response;
+      if (isSharedMode) {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            filePath: fileName,
+            password: password || null,
+          }),
+        });
+      } else {
+        const formData = new FormData();
+        const fileBlob = new Blob([new Uint8Array(buffer)], { type: 'application/pdf' });
+        formData.append('file', fileBlob, fileName);
+        if (password) {
+          formData.append('password', password);
+        }
+
+        response = await fetch(url, {
+          method: 'POST',
+          body: formData,
+        });
+      }
+
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        if (response.status === 400 && errJson.error === 'PasswordRequired') {
+          throw new PasswordException('PDF is password protected');
+        }
+        throw new Error(errJson.detail || errJson.message || `HTTP error ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data as StatementData;
+    } catch (err) {
+      if (err instanceof PasswordException) {
+        throw err;
+      }
+      this.logger.error(`Python parsing service failed for ${fileName}:`, err);
+      return null;
+    }
+  }
+
   private async parseAndUpdateRecord(
     recordId: number,
     userId: number,
     buffer: Buffer,
-    originalname: string,
+    fileName: string,
     password?: string,
   ): Promise<void> {
     try {
-      const text = await this.parsePdfText(buffer, password);
+      let parsedData: StatementData | null = null;
+      let source = '未知';
 
-      // 解析后用文本内容精确判断来源，优先匹配账单标题，避免交易对手方名称误判来源。
-      const source = this.detectSourceFromText(text);
-
-      if (!source) {
-        throw new BadRequestException('不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行或农商银行交易流水。');
+      // 1. Try Python service first
+      try {
+        parsedData = await this.parseWithPythonService(buffer, fileName, password);
+        if (parsedData && parsedData.summary) {
+          source = parsedData.summary.source || '未知';
+        }
+      } catch (err) {
+        if (err instanceof PasswordException) {
+          throw err;
+        }
+        this.logger.warn(`Python parsing service threw an error, falling back to local parsing for record ${recordId}`);
       }
 
-      const parsedData = this.extractData(text, source);
+      // 2. Fallback to local JS parsing if Python returned null
+        const text = await this.parsePdfText(buffer, password);
+        const detected = this.detectSourceFromText(text);
+
+        if (!detected) {
+          throw new BadRequestException('不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行或农商银行交易流水。');
+        }
+
+        source = detected;
+        parsedData = this.extractData(text, source);
+      }
 
       if (parsedData.transactions.length === 0) {
         this.logger.warn(
-          `Parsed 0 transactions for record ${recordId} (${source}, ${originalname})`,
+          `Parsed 0 transactions for record ${recordId} (${source}, ${fileName})`,
         );
       } else {
         this.logger.log(
@@ -1165,9 +1244,14 @@ export class StatementService {
           const amountMatch = amountLine.match(/(\d+\.\d{2})/);
           if (amountMatch) {
             const amount = parseFloat(amountMatch[1]);
-            // 「其他」类：交易对方与商户单号均为 /，不再解析后续字段
+            
+            // Extract the original details from before the amount line if isOtherType is true
+            const otherDetail = (isOtherType && amountLineIdx > 0)
+              ? blockLines.slice(0, amountLineIdx).join('').replace(/\s+/g, '').trim()
+              : '/';
+
             const counterparty = isOtherType
-              ? '/'
+              ? (otherDetail || '/')
               : this.extractWechatCounterparty(
                 amountLine
                   .slice(amountLine.indexOf(amountMatch[0]) + amountMatch[0].length)

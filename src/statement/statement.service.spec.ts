@@ -40,7 +40,7 @@ describe('StatementService', () => {
         date: '2026-05-12 01:22:34',
         type: '不计收支',
         amount: 5,
-        counterparty: '/',
+        counterparty: '零钱通转出-到零钱',
       });
     });
 
@@ -61,7 +61,7 @@ describe('StatementService', () => {
         date: '2026-05-12 02:03:15',
         type: '不计收支',
         amount: 380,
-        counterparty: '/',
+        counterparty: '转入零钱通-来自零钱',
       });
     });
 

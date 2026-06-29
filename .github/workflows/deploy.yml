@@ -27,6 +27,7 @@ on:
       - "prisma.config.ts"
       - "docker-compose*.yml"
       - "deploy/**"
+      - "pdf-parser/**"
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
 
@@ -41,17 +42,21 @@ jobs:
       packages: write
     outputs:
       image_full_sha: ${{ steps.resolve.outputs.image_full_sha }}
+      python_image_full_sha: ${{ steps.resolve.outputs.python_image_full_sha }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve ghcr.io image name (lowercase owner)
+      - name: Resolve ghcr.io image names (lowercase owner)
         id: resolve
         run: |
           OWNER_LC="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
           IMAGE_NAME="ghcr.io/${OWNER_LC}/bill-analysis-server"
+          PYTHON_IMAGE_NAME="ghcr.io/${OWNER_LC}/pdf-parser"
           echo "IMAGE_NAME=${IMAGE_NAME}" >> "$GITHUB_ENV"
+          echo "PYTHON_IMAGE_NAME=${PYTHON_IMAGE_NAME}" >> "$GITHUB_ENV"
           echo "image_full_sha=${IMAGE_NAME}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "python_image_full_sha=${PYTHON_IMAGE_NAME}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/login-action@v3
         with:
@@ -59,7 +64,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/build-push-action@v6
+      - name: Build and push NestJS app
+        uses: docker/build-push-action@v6
         with:
           context: ${{ env.CONTEXT_PATH }}
           file: ${{ env.CONTEXT_PATH }}/Dockerfile
@@ -67,6 +73,16 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Build and push Python service
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CONTEXT_PATH }}/pdf-parser
+          file: ${{ env.CONTEXT_PATH }}/pdf-parser/Dockerfile
+          push: true
+          tags: |
+            ${{ env.PYTHON_IMAGE_NAME }}:latest
+            ${{ env.PYTHON_IMAGE_NAME }}:${{ github.sha }}
 
   # 并行部署到服务器1（始终执行）
   deploy-server-1:
@@ -79,15 +95,14 @@ jobs:
       - uses: appleboy/ssh-action@v1.2.0
         env:
           IMAGE_FULL_SHA: ${{ needs.build-and-push.outputs.image_full_sha }}
+          PYTHON_IMAGE_FULL_SHA: ${{ needs.build-and-push.outputs.python_image_full_sha }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
-          # PostgreSQL 在 Docker 容器时需要：设置 DEPLOY_DOCKER_NETWORK 为 Docker 网络名（如 uniapp-network）
-          # PostgreSQL 在宿主机时留空
           DOCKER_NETWORK: ${{ vars.DEPLOY_DOCKER_NETWORK }}
         with:
           host: ${{ vars.DEPLOY_HOST }}
           username: ${{ vars.DEPLOY_USER }}
           password: ${{ secrets.DEPLOY_SSH_PASSWORD }}
-          envs: IMAGE_FULL_SHA,DEPLOY_PATH,DOCKER_NETWORK
+          envs: IMAGE_FULL_SHA,PYTHON_IMAGE_FULL_SHA,DEPLOY_PATH,DOCKER_NETWORK
           script_stop: true
           script: |
             set -exo pipefail
@@ -97,6 +112,7 @@ jobs:
               exit 1
             fi
             export DOCKER_IMAGE="${IMAGE_FULL_SHA}"
+            export PYTHON_DOCKER_IMAGE="${PYTHON_IMAGE_FULL_SHA}"
             bash deploy/remote-deploy.sh
 
   # 并行部署到服务器2（需配置 DEPLOY_HOST_2 等变量）
@@ -120,8 +136,8 @@ jobs:
               echo "Error: .env not found in ${{ vars.DEPLOY_PATH_2 }}"
               exit 1
             fi
-            # 直接在 script 中 export，避免 envs 机制传递空值的歧义
             export DOCKER_IMAGE="${{ needs.build-and-push.outputs.image_full_sha }}"
+            export PYTHON_DOCKER_IMAGE="${{ needs.build-and-push.outputs.python_image_full_sha }}"
             export DOCKER_NETWORK="${{ vars.DEPLOY_DOCKER_NETWORK_2 }}"
             echo "[workflow] DOCKER_NETWORK=${DOCKER_NETWORK}" >&2
             bash deploy/remote-deploy.sh

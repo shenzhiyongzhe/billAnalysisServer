@@ -3,7 +3,7 @@ import { PrismaService } from '../prisma.service';
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) { }
 
   async getUsers() {
     return this.prisma.wechatUser.findMany({
@@ -191,6 +191,79 @@ export class AdminService {
       total,
       page,
       limit,
+    };
+  }
+
+  async getUserRanking() {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const todayQueriesGroup = await this.prisma.queryRecord.groupBy({
+      by: ['userId'],
+      _count: {
+        id: true,
+      },
+      where: {
+        createdAt: {
+          gte: todayStart,
+        },
+      },
+      orderBy: {
+        _count: {
+          id: 'desc',
+        },
+      },
+      take: 10,
+    });
+
+    const todayUserIds = todayQueriesGroup.map((g) => g.userId);
+    const todayCountsMap = new Map(todayQueriesGroup.map((g) => [g.userId, g._count.id]));
+
+    const todayUsers = await this.prisma.wechatUser.findMany({
+      where: {
+        id: { in: todayUserIds },
+      },
+      select: {
+        id: true,
+        nickname: true,
+        avatar: true,
+        displayId: true,
+      },
+    });
+
+    const todayRanking = todayUsers
+      .map((u) => ({
+        id: u.id,
+        nickname: u.nickname,
+        avatar: u.avatar,
+        displayId: u.displayId,
+        queriesCount: todayCountsMap.get(u.id) || 0,
+      }))
+      .sort((a, b) => b.queriesCount - a.queriesCount);
+
+    const historicalRanking = await this.prisma.wechatUser.findMany({
+      orderBy: {
+        totalQueries: 'desc',
+      },
+      take: 50,
+      select: {
+        id: true,
+        nickname: true,
+        avatar: true,
+        displayId: true,
+        totalQueries: true,
+      },
+    });
+
+    return {
+      today: todayRanking,
+      historical: historicalRanking.map((u) => ({
+        id: u.id,
+        nickname: u.nickname,
+        avatar: u.avatar,
+        displayId: u.displayId,
+        queriesCount: u.totalQueries,
+      })),
     };
   }
 }

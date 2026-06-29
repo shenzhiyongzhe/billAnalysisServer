@@ -67,4 +67,9 @@ export class AdminController {
   async getDailyStatistics() {
     return this.statisticsService.getDailyStatistics();
   }
+
+  @Get('users/ranking')
+  async getUserRanking() {
+    return this.adminService.getUserRanking();
+  }
 }
