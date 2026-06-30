@@ -50,18 +50,33 @@ export class StatisticsService {
       },
     });
 
-    // 3. Total queries overall up to now
-    const totalQueries = await this.prisma.queryRecord.count();
+    // 3. Total queries overall up to now (accumulated from yesterday's stats + today's queries)
+    const yesterdayDate = new Date(startOfDate);
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+    
+    const yesterdayStats = await this.prisma.dailyStatistics.findUnique({
+      where: { date: yesterdayDate },
+      select: { totalQueries: true, totalRecharges: true },
+    });
 
-    // 4. Total resets/operations overall up to now
-    const totalRecharges = await this.prisma.queryOperationRecord.count();
+    const yesterdayTotalQueries = yesterdayStats?.totalQueries || 0;
+    const totalQueries = yesterdayTotalQueries + todayQueries;
+
+    // 4. Total resets/operations overall up to now (accumulated from yesterday's stats + today's recharges)
+    const yesterdayTotalRecharges = yesterdayStats?.totalRecharges || 0;
+    const totalRecharges = yesterdayTotalRecharges + todayRecharges;
 
     // 5. Average queries per day since first query
+    // Since query records might be deleted periodically, find the true start date from historical stats first
+    const firstStat = await this.prisma.dailyStatistics.findFirst({
+      orderBy: { date: 'asc' },
+      select: { date: true },
+    });
     const firstRecord = await this.prisma.queryRecord.findFirst({
       orderBy: { createdAt: 'asc' },
       select: { createdAt: true },
     });
-    const firstDate = firstRecord?.createdAt || startOfDate;
+    const firstDate = firstStat?.date || firstRecord?.createdAt || startOfDate;
     
     // Convert dates to absolute day numbers to avoid time offset errors
     const startOfFirstDate = new Date(firstDate);
