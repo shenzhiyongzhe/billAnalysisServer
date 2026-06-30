@@ -5,8 +5,17 @@ import { PrismaService } from '../prisma.service';
 export class AdminService {
   constructor(private readonly prisma: PrismaService) { }
 
-  async getUsers() {
+  async getUsers(search?: string) {
+    const where: any = {};
+    if (search) {
+      where.OR = [
+        { nickname: { contains: search, mode: 'insensitive' } },
+        { displayId: search },
+      ];
+    }
+
     return this.prisma.wechatUser.findMany({
+      where,
       select: {
         id: true,
         openid: true,
@@ -100,20 +109,38 @@ export class AdminService {
     });
   }
 
-  async getQueryRecords(pageStr?: string, limitStr?: string) {
+  async getQueryRecords(pageStr?: string, limitStr?: string, search?: string) {
     const page = pageStr ? parseInt(pageStr, 10) : 1;
     const limit = limitStr ? parseInt(limitStr, 10) : 20;
     const skip = (page - 1) * limit;
 
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const where: any = {};
+
+    if (search) {
+      const orConditions: any[] = [
+        {
+          statementUser: {
+            name: { contains: search, mode: 'insensitive' },
+          },
+        },
+      ];
+
+      const searchNum = parseInt(search, 10);
+      if (!isNaN(searchNum)) {
+        orConditions.push({ userId: searchNum });
+      }
+
+      orConditions.push({
+        user: {
+          displayId: { contains: search, mode: 'insensitive' },
+        },
+      });
+
+      where.OR = orConditions;
+    }
 
     const records = await this.prisma.queryRecord.findMany({
-      where: {
-        createdAt: {
-          gte: sevenDaysAgo,
-        },
-      },
+      where,
       orderBy: {
         createdAt: 'desc',
       },
@@ -123,6 +150,12 @@ export class AdminService {
         statementUser: {
           select: {
             name: true,
+          },
+        },
+        user: {
+          select: {
+            nickname: true,
+            avatar: true,
           },
         },
       },
@@ -144,8 +177,10 @@ export class AdminService {
       return {
         id: record.id,
         statementUser: record.statementUser?.name || null,
-        idNumber: summary?.idNumber || null,
+        idNumber: summary?.idNumber ? String(summary.idNumber).slice(-4) : null,
         createdAt: record.createdAt,
+        nickname: record.user?.nickname || null,
+        avatar: record.user?.avatar || null,
       };
     });
   }

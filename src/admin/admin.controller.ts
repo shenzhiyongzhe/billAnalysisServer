@@ -24,8 +24,8 @@ export class AdminController {
   ) {}
 
   @Get('users')
-  async getUsers() {
-    return this.adminService.getUsers();
+  async getUsers(@Query('search') search?: string) {
+    return this.adminService.getUsers(search);
   }
 
   @Put('users/:id/queries')
@@ -52,8 +52,9 @@ export class AdminController {
   async getQueryRecords(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('search') search?: string,
   ) {
-    return this.adminService.getQueryRecords(page, limit);
+    return this.adminService.getQueryRecords(page, limit, search);
   }
 
   @Get('query-operation-records')
