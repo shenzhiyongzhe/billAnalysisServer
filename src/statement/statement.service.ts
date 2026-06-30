@@ -410,7 +410,9 @@ export class StatementService {
       select: { userId: true, status: true },
     });
     if (!record) throw new NotFoundException('Record not found');
-    if (record.userId !== userId) throw new ForbiddenException('无权访问该记录');
+    if (!(await this.isOwnerOrAdmin(record.userId, userId))) {
+      throw new ForbiddenException('无权访问该记录');
+    }
     return {
       status: record.status,
       ready: record.status === 'done',
@@ -443,7 +445,7 @@ export class StatementService {
     if (!record) {
       throw new NotFoundException('Record not found');
     }
-    if (record.userId !== userId) {
+    if (!(await this.isOwnerOrAdmin(record.userId, userId))) {
       throw new ForbiddenException('无权删除该记录');
     }
 
@@ -461,7 +463,9 @@ export class StatementService {
       where: { id: recordId },
     });
     if (!record) throw new NotFoundException('Record not found');
-    if (record.userId !== userId) throw new ForbiddenException('无权访问该记录');
+    if (!(await this.isOwnerOrAdmin(record.userId, userId))) {
+      throw new ForbiddenException('无权访问该记录');
+    }
     if (record.status !== 'password_required' && record.status !== 'failed') {
       throw new BadRequestException('记录状态不满足重试条件');
     }
@@ -490,9 +494,18 @@ export class StatementService {
       select: { userId: true },
     });
     if (!record) throw new NotFoundException('Record not found');
-    if (record.userId !== userId) {
+    if (!(await this.isOwnerOrAdmin(record.userId, userId))) {
       throw new ForbiddenException('无权访问该记录');
     }
+  }
+
+  private async isOwnerOrAdmin(recordUserId: number, userId: number): Promise<boolean> {
+    if (recordUserId === userId) return true;
+    const requestingUser = await this.prisma.wechatUser.findUnique({
+      where: { id: userId },
+      select: { level: true },
+    });
+    return requestingUser?.level === 999;
   }
 
   private async getPersistedData(recordId: number): Promise<StatementData> {
