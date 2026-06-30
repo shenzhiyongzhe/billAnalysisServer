@@ -7,7 +7,7 @@ export class AdminService {
 
   async getUsers(search?: string) {
     const where: any = {};
-    if (search) {
+    if (search && search !== "undefined" && search !== "null" && search.trim() !== "") {
       where.OR = [
         { nickname: { contains: search, mode: 'insensitive' } },
         { displayId: search },
@@ -116,7 +116,7 @@ export class AdminService {
 
     const where: any = {};
 
-    if (search) {
+    if (search && search !== "undefined" && search !== "null" && search.trim() !== "") {
       const orConditions: any[] = [
         {
           statementUser: {
