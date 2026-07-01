@@ -96,6 +96,11 @@ export class StatementController {
     return this.statementService.saveUserCustomCategory(userId, counterparty.trim(), category.trim());
   }
 
+  @Get('categories')
+  async getCategories() {
+    return this.statementService.getCategories();
+  }
+
   @Get('custom-categories')
   async getCustomCategories(@CurrentUserId() userId: number) {
     return this.statementService.getUserCustomCategories(userId);

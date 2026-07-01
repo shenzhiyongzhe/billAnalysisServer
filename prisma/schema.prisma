@@ -46,13 +46,14 @@ model UserSession {
 }
 
 model StatementUser {
-  id         Int      @id @default(autoincrement())
-  name       String
-  idNumber   String?  @unique
-  cardNumber String?  @unique
-  queryCount Int      @default(1)
-  records    QueryRecord[]
-  createdAt  DateTime @default(now())
+  id          Int      @id @default(autoincrement())
+  name        String
+  idNumber    String?  @unique
+  cardNumber  String?  @unique
+  phoneNumber String?
+  queryCount  Int      @default(1)
+  records     QueryRecord[]
+  createdAt   DateTime @default(now())
 }
 
 model QueryRecord {

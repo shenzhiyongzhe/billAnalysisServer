@@ -371,4 +371,85 @@ describe('StatementService', () => {
       await expect((service as any).parsePdfText(Buffer.from('invalid pdf'))).rejects.toThrow();
     });
   });
+
+  describe('parseCsvFile', () => {
+    const parse = (buffer: Buffer) =>
+      (service as any).parseCsvFile(buffer);
+
+    it('rejects Alipay Cashbook with BadRequestException', async () => {
+      const cashbookContent = [
+        '特别提示：',
+        '1.本记账单内容可表明支付宝受理了相应记账明细申请',
+        '记录时间,分类,收支类型,金额,备注,账户,来源,标签',
+        '2026-06-28 11:19:26,转账,支出,5000.00,感谢老姐的照顾-小梅(梅昙),招商银行,账单同步'
+      ].join('\n');
+
+      const buffer = Buffer.from(cashbookContent, 'utf-8');
+      await expect(parse(buffer)).rejects.toThrow('暂不支持解析支付宝记账本流水');
+    });
+
+    it('parses standard Alipay Transaction Details CSV', async () => {
+      const csvContent = [
+        '------------------------------------------------------------------------------------',
+        '导出信息：',
+        '姓名：梅XX',
+        '支付宝账户：19232048628',
+        '起始时间：[2026-04-01 00:00:00]    终止时间：[2026-07-01 23:59:59]',
+        '------------------------支付宝支付科技有限公司  电子客户回单------------------------',
+        '交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,',
+        '2026-06-28 11:19:26,转账红包,小梅(梅XX),gif***@qq.com,感谢梅XX的照顾,支出,"5,000.00",招商银行储蓄卡(8759),交易成功,20260628200040011100680018462283	,	,,',
+        '2026-06-27 06:40:18,日用百货,念***w,183******45,RTX4090跑包,支出,19.89,网商银行储蓄卡(6617),支付成功,2026062723001154681441324980	,	,,'
+      ].join('\n');
+
+      const buffer = Buffer.from(csvContent, 'utf-8');
+      const res = await parse(buffer);
+
+      expect(res.summary).toMatchObject({
+        source: '支付宝',
+        name: '梅XX',
+        phoneNumber: '19232048628',
+        startDate: '2026-04-01',
+        endDate: '2026-07-01',
+        totalIncome: 0,
+        totalExpenditure: 5019.89,
+        selfIncome: 0,
+        selfExpenditure: 5000,
+      });
+
+      expect(res.transactions).toHaveLength(2);
+      expect(res.transactions[0]).toMatchObject({
+        date: '2026-06-28 11:19:26',
+        type: '支出',
+        amount: 5000,
+        counterparty: '小梅(梅XX)',
+        bizType: '转账红包',
+        product: '感谢梅XX的照顾',
+      });
+      expect(res.transactions[1]).toMatchObject({
+        date: '2026-06-27 06:40:18',
+        type: '支出',
+        amount: 19.89,
+        counterparty: '念***w',
+        bizType: '日用百货',
+        product: 'RTX4090跑包',
+      });
+    });
+
+    it('falls back to 匿名 when name is missing', async () => {
+      const csvContent = [
+        '------------------------------------------------------------------------------------',
+        '导出信息：',
+        '起始时间：[2026-04-01 00:00:00]    终止时间：[2026-07-01 23:59:59]',
+        '------------------------支付宝支付科技有限公司  电子客户回单------------------------',
+        '交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,',
+        '2026-06-27 06:40:18,日用百货,念***w,183******45,RTX4090跑包,支出,19.89,网商银行储蓄卡(6617),支付成功,2026062723001154681441324980	,	,,'
+      ].join('\n');
+
+      const buffer = Buffer.from(csvContent, 'utf-8');
+      const res = await parse(buffer);
+
+      expect(res.summary.name).toBe('匿名');
+      expect(res.summary.phoneNumber).toBe('');
+    });
+  });
 });

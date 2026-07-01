@@ -6,6 +6,7 @@ import { Worker } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import * as ExcelJS from 'exceljs';
 
 const DEFAULT_QUERY_SERVER_BASE = 'https://www.xinde8888.com/api/query_info';
 
@@ -64,9 +65,11 @@ export interface StatementSummary {
   selfExpenditure: number;
   maskedIdNumber?: string;
   maskedCardNumber?: string;
+  maskedPhoneNumber?: string;
   nativePlace?: string;
   genderText?: string;
   age?: number;
+  phoneNumber?: string;
 }
 
 export interface Transaction {
@@ -89,12 +92,11 @@ export interface StatementResultMeta {
   id: string;
   source: string;
   name: string;
-  idNumber: string;
-  cardNumber?: string;
   startDate: string;
   endDate: string;
   maskedIdNumber?: string;
   maskedCardNumber?: string;
+  maskedPhoneNumber?: string;
   nativePlace?: string;
   genderText?: string;
   age?: number;
@@ -268,15 +270,26 @@ export class StatementService {
     password?: string,
   ): Promise<void> {
     try {
-      const text = await this.parsePdfText(buffer, password);
-      const detected = this.detectSourceFromText(text);
+      let source: string;
+      let parsedData: StatementData;
 
-      if (!detected) {
-        throw new BadRequestException('不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行或农商银行交易流水。');
+      if (fileName.toLowerCase().endsWith('.xlsx') || fileName.toLowerCase().endsWith('.xls')) {
+        source = '微信';
+        parsedData = await this.parseXlsxFile(buffer);
+      } else if (fileName.toLowerCase().endsWith('.csv')) {
+        parsedData = await this.parseCsvFile(buffer);
+        source = parsedData.summary.source;
+      } else {
+        const text = await this.parsePdfText(buffer, password);
+        const detected = this.detectSourceFromText(text);
+
+        if (!detected) {
+          throw new BadRequestException('不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行或农商银行交易流水。');
+        }
+
+        source = detected;
+        parsedData = this.extractData(text, source);
       }
-
-      const source = detected;
-      const parsedData = this.extractData(text, source);
 
       if (parsedData.transactions.length === 0) {
         this.logger.warn(
@@ -293,8 +306,9 @@ export class StatementService {
       if (parsedData.summary.name !== '未知') {
         const idNumber = parsedData.summary.idNumber || null;
         const cardNumber = parsedData.summary.cardNumber || null;
+        const phoneNumber = parsedData.summary.phoneNumber || null;
 
-        if (idNumber || cardNumber) {
+        if (idNumber || cardNumber || phoneNumber) {
           let su;
           if (idNumber) {
             su = await this.prisma.statementUser.upsert({
@@ -304,22 +318,47 @@ export class StatementService {
                 name: parsedData.summary.name,
                 idNumber,
                 cardNumber,
+                phoneNumber,
                 queryCount: 1,
               },
               select: { id: true },
             });
-          } else {
+          } else if (cardNumber) {
             su = await this.prisma.statementUser.upsert({
-              where: { cardNumber: cardNumber! },
+              where: { cardNumber },
               update: { queryCount: { increment: 1 } },
               create: {
                 name: parsedData.summary.name,
                 idNumber,
                 cardNumber,
+                phoneNumber,
                 queryCount: 1,
               },
               select: { id: true },
             });
+          } else {
+            const existingUser = await this.prisma.statementUser.findFirst({
+              where: { phoneNumber: phoneNumber! },
+              select: { id: true },
+            });
+            if (existingUser) {
+              su = await this.prisma.statementUser.update({
+                where: { id: existingUser.id },
+                data: { queryCount: { increment: 1 } },
+                select: { id: true },
+              });
+            } else {
+              su = await this.prisma.statementUser.create({
+                data: {
+                  name: parsedData.summary.name,
+                  idNumber,
+                  cardNumber,
+                  phoneNumber,
+                  queryCount: 1,
+                },
+                select: { id: true },
+              });
+            }
           }
           statementUserId = su.id;
         }
@@ -431,12 +470,15 @@ export class StatementService {
       orderBy: { createdAt: 'desc' }
     });
 
-    return records.map(r => ({
-      id: r.id,
-      source: r.source,
-      name: r.statementUser?.name || '未知',
-      createdAt: r.createdAt
-    }));
+    return records.map(r => {
+      const summaryName = r.summaryJson && typeof r.summaryJson === 'object' ? (r.summaryJson as any).name : undefined;
+      return {
+        id: r.id,
+        source: r.source,
+        name: r.statementUser?.name || summaryName || '未知',
+        createdAt: r.createdAt
+      };
+    });
   }
 
   async deleteRecord(userId: number, recordId: number) {
@@ -557,12 +599,21 @@ export class StatementService {
     }
 
     const buffer = fs.readFileSync(filePath);
-    const text = await this.parsePdfText(buffer);
-    const parsedData = this.extractData(text, source);
+    let parsedData: StatementData;
+
+    if (fileName.toLowerCase().endsWith('.xlsx') || fileName.toLowerCase().endsWith('.xls')) {
+      parsedData = await this.parseXlsxFile(buffer);
+    } else if (fileName.toLowerCase().endsWith('.csv')) {
+      parsedData = await this.parseCsvFile(buffer);
+    } else {
+      const text = await this.parsePdfText(buffer);
+      parsedData = this.extractData(text, source);
+    }
 
     await this.prisma.queryRecord.update({
       where: { id: recordId },
       data: {
+        source: parsedData.summary.source,
         summaryJson: parsedData.summary as any,
         transactionsJson: parsedData.transactions as any,
         startDate: this.parseDateOnlyToDate(parsedData.summary.startDate),
@@ -610,6 +661,13 @@ export class StatementService {
         : cardNum;
     }
 
+    if (result.phoneNumber) {
+      const phone = result.phoneNumber;
+      result.maskedPhoneNumber = phone.length > 7
+        ? phone.slice(0, 3) + '*'.repeat(phone.length - 7) + phone.slice(-4)
+        : phone;
+    }
+
     return result;
   }
 
@@ -619,8 +677,12 @@ export class StatementService {
       totalExpenditure: _te,
       selfIncome: _si,
       selfExpenditure: _se,
+      idNumber: _id,
+      cardNumber: _card,
+      phoneNumber: _phone,
       ...meta
     } = summary;
+
     return meta;
   }
 
@@ -692,7 +754,7 @@ export class StatementService {
 
     const record = await this.prisma.queryRecord.findUnique({
       where: { id },
-      select: { statementUserId: true },
+      select: { statementUserId: true, createdAt: true },
     });
 
     if (record?.statementUserId) {
@@ -704,6 +766,10 @@ export class StatementService {
         queryCount = statementUser.queryCount;
         firstQueryTime = statementUser.createdAt;
       }
+    }
+
+    if (!firstQueryTime && record) {
+      firstQueryTime = record.createdAt;
     }
 
     const classifiedTransactions = await this.classifyTransactionsForUser(userId, data.transactions);
@@ -1443,6 +1509,30 @@ export class StatementService {
     });
   }
 
+  async getCategories() {
+    const dbCategories = await this.prisma.globalCategoryKeyword.findMany({
+      distinct: ['category'],
+      select: { category: true },
+    });
+    
+    const dbSet = new Set(dbCategories.map(c => c.category));
+    const coreCategories = ['餐饮', '购物', '交通', '娱乐', '服务', '转账', '收入', '其他'];
+    
+    const allCategories = [...coreCategories];
+    for (const cat of dbSet) {
+      if (cat && !allCategories.includes(cat)) {
+        const otherIndex = allCategories.indexOf('其他');
+        if (otherIndex !== -1) {
+          allCategories.splice(otherIndex, 0, cat);
+        } else {
+          allCategories.push(cat);
+        }
+      }
+    }
+    
+    return allCategories;
+  }
+
   async classifyTransactionsForUser(userId: number, transactions: Transaction[]): Promise<Transaction[]> {
     // 1. Fetch user custom categories
     const userCustomList = await this.prisma.userCustomCategory.findMany({
@@ -1453,18 +1543,8 @@ export class StatementService {
       userCustomMap.set(uc.counterparty.trim(), uc.category);
     }
 
-    // 2. Fetch global keywords, self-seed if empty
-    let globalKeywordsList = await this.prisma.globalCategoryKeyword.findMany();
-    if (globalKeywordsList.length === 0) {
-      await this.prisma.globalCategoryKeyword.createMany({
-        data: DEFAULT_GLOBAL_KEYWORDS.map(item => ({
-          category: item.category,
-          keyword: item.keyword,
-        })),
-        skipDuplicates: true,
-      });
-      globalKeywordsList = await this.prisma.globalCategoryKeyword.findMany();
-    }
+    // 2. Fetch global keywords
+    const globalKeywordsList = await this.prisma.globalCategoryKeyword.findMany();
 
     const globalKeywordsMap = new Map<string, string[]>();
     for (const gk of globalKeywordsList) {
@@ -1500,15 +1580,7 @@ export class StatementService {
     }
 
     // 2. Income rule
-    const isIncomeType = type === '收入' && (
-      bizType.includes('二维码收款') ||
-      bizType.includes('微信红包') ||
-      bizType.includes('退款') ||
-      combined.includes('退款') ||
-      combined.includes('红包') ||
-      bizType.includes('红包')
-    );
-    if (isIncomeType) {
+    if (type === '收入') {
       return '收入';
     }
 
@@ -1532,98 +1604,404 @@ export class StatementService {
 
     return '其他';
   }
+
+  private async parseXlsxFile(buffer: Buffer): Promise<StatementData> {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer as any);
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) {
+      throw new BadRequestException('Excel 工作表为空');
+    }
+
+    let name = '未知';
+    let startDate = '';
+    let endDate = '';
+    let headerRowIndex = -1;
+
+    // 扫描前 50 行以寻找元数据和表头所在行
+    const limit = Math.min(50, worksheet.rowCount);
+    for (let i = 1; i <= limit; i++) {
+      const row = worksheet.getRow(i);
+      const firstCellVal = row.getCell(1).value;
+      if (typeof firstCellVal === 'string') {
+        if (firstCellVal.includes('微信昵称：')) {
+          const nameMatch = firstCellVal.match(/微信昵称：\[?(.*?)\]?$/);
+          if (nameMatch) {
+            name = nameMatch[1].replace(/^\[|\]$/g, '');
+          }
+        }
+        if (firstCellVal.includes('起始时间：')) {
+          const rangeMatch = firstCellVal.match(/起始时间：\[?(.*?)\]?\s+终止时间：\[?(.*?)\]?$/);
+          if (rangeMatch) {
+            const startClean = rangeMatch[1].replace(/^\[|\]$/g, '');
+            const endClean = rangeMatch[2].replace(/^\[|\]$/g, '');
+            startDate = startClean.split(' ')[0];
+            endDate = endClean.split(' ')[0];
+          }
+        }
+        if (firstCellVal.trim() === '交易时间') {
+          headerRowIndex = i;
+        }
+      }
+    }
+
+    if (headerRowIndex === -1) {
+      throw new BadRequestException('未能在 Excel 文件中找到包含“交易时间”的表头行');
+    }
+
+    // 动态映射列
+    const headerRow = worksheet.getRow(headerRowIndex);
+    const colMap: { [key: string]: number } = {};
+    headerRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      const val = cell.value;
+      if (typeof val === 'string') {
+        colMap[val.trim()] = colNumber;
+      }
+    });
+
+    const requiredHeaders = ['交易时间', '收/支', '金额(元)', '交易对方'];
+    for (const req of requiredHeaders) {
+      if (!colMap[req]) {
+        throw new BadRequestException(`Excel 账单缺少必要的列: ${req}`);
+      }
+    }
+
+    const formatWechatExcelDate = (cellVal: any): { dateStr: string; monthStr: string } => {
+      let dateObj: Date;
+      if (cellVal instanceof Date) {
+        dateObj = cellVal;
+      } else if (typeof cellVal === 'string') {
+        dateObj = new Date(cellVal);
+      } else if (cellVal && typeof cellVal === 'object' && (cellVal as any).result instanceof Date) {
+        dateObj = (cellVal as any).result;
+      } else {
+        return { dateStr: '', monthStr: '' };
+      }
+
+      if (Number.isNaN(dateObj.getTime())) {
+        return { dateStr: '', monthStr: '' };
+      }
+
+      // 微信账单为 UTC+08:00 时间。增加 8 小时偏移量，使用 UTC 方法格式化以保证时区无关性
+      const tzOffsetMs = 8 * 60 * 60 * 1000;
+      const localTime = new Date(dateObj.getTime() + tzOffsetMs);
+      const pad = (num: number) => String(num).padStart(2, '0');
+
+      const year = localTime.getUTCFullYear();
+      const month = pad(localTime.getUTCMonth() + 1);
+      const day = pad(localTime.getUTCDate());
+      const hours = pad(localTime.getUTCHours());
+      const minutes = pad(localTime.getUTCMinutes());
+      const seconds = pad(localTime.getUTCSeconds());
+
+      const dateStr = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+      const monthStr = `${year}-${month}`;
+      return { dateStr, monthStr };
+    };
+
+    const transactions: Transaction[] = [];
+    for (let i = headerRowIndex + 1; i <= worksheet.rowCount; i++) {
+      const row = worksheet.getRow(i);
+      const dateCellVal = row.getCell(colMap['交易时间']).value;
+      if (!dateCellVal) continue; // 跳过空行
+
+      const { dateStr, monthStr } = formatWechatExcelDate(dateCellVal);
+      if (!dateStr) continue;
+
+      const bizType = String(row.getCell(colMap['交易类型'] || 2).value || '').trim();
+      const counterparty = String(row.getCell(colMap['交易对方'] || 3).value || '未知').trim();
+      const product = String(row.getCell(colMap['商品'] || 4).value || '').trim();
+      const typeStr = String(row.getCell(colMap['收/支'] || 5).value || '').trim();
+
+      let type: '收入' | '支出' | '不计收支' = '不计收支';
+      if (typeStr === '收入') type = '收入';
+      else if (typeStr === '支出') type = '支出';
+
+      const amountVal = row.getCell(colMap['金额(元)'] || 6).value;
+      const amount = Number(amountVal) || 0;
+
+      transactions.push({
+        date: dateStr,
+        month: monthStr,
+        type,
+        amount,
+        counterparty,
+        bizType,
+        product,
+      });
+    }
+
+    // 按交易时间排序
+    transactions.sort((a, b) => a.date.localeCompare(b.date));
+    
+    if (transactions.length > 0) {
+      if (!startDate) startDate = transactions[0].date.substring(0, 10);
+      if (!endDate) endDate = transactions[transactions.length - 1].date.substring(0, 10);
+    }
+
+    // 倒序排列（新交易在最上面）
+    transactions.reverse();
+
+    let totalIncome = 0;
+    let totalExpenditure = 0;
+    let selfIncome = 0;
+    let selfExpenditure = 0;
+
+    transactions.forEach((t) => {
+      if (t.type === '收入') {
+        totalIncome += t.amount;
+        if (t.counterparty.includes(name) || t.counterparty.includes('转入到余利宝')) selfIncome += t.amount;
+      } else if (t.type === '支出') {
+        totalExpenditure += t.amount;
+        if (t.counterparty.includes(name) || t.counterparty.includes('转入到余利宝')) selfExpenditure += t.amount;
+      }
+    });
+
+    totalIncome = Number(totalIncome.toFixed(2));
+    totalExpenditure = Number(totalExpenditure.toFixed(2));
+    selfIncome = Number(selfIncome.toFixed(2));
+    selfExpenditure = Number(selfExpenditure.toFixed(2));
+
+    return {
+      summary: {
+        id: '',
+        source: '微信',
+        name,
+        idNumber: '',
+        cardNumber: '',
+        startDate,
+        endDate,
+        totalIncome,
+        totalExpenditure,
+        selfIncome,
+        selfExpenditure,
+      },
+      transactions,
+    };
+  }
+
+  private parseCsvLine(line: string): string[] {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  }
+
+  private formatDateStr(str: string): { dateStr: string; monthStr: string } {
+    const clean = str.trim().replace(/\//g, '-');
+    if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}$/.test(clean)) {
+      return { dateStr: clean, monthStr: clean.substring(0, 7) };
+    }
+    if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/.test(clean)) {
+      return { dateStr: `${clean}:00`, monthStr: clean.substring(0, 7) };
+    }
+    const d = new Date(clean);
+    if (Number.isNaN(d.getTime())) {
+      return { dateStr: '', monthStr: '' };
+    }
+    const pad = (num: number) => String(num).padStart(2, '0');
+    const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    return { dateStr, monthStr: dateStr.substring(0, 7) };
+  }
+
+  private async parseCsvFile(buffer: Buffer): Promise<StatementData> {
+    let text = '';
+    try {
+      const decoder = new TextDecoder('gbk');
+      text = decoder.decode(buffer);
+      if (!text.includes('特别提示') && !text.includes('支付宝') && !text.includes('记录时间')) {
+        const utf8Decoder = new TextDecoder('utf-8');
+        text = utf8Decoder.decode(buffer);
+      }
+    } catch (e) {
+      const utf8Decoder = new TextDecoder('utf-8');
+      text = utf8Decoder.decode(buffer);
+    }
+
+    // Check if it is Alipay Cashbook and reject it
+    if (
+      text.includes('本记账单内容可表明') || 
+      text.includes('记录时间,分类,收支类型') || 
+      text.includes('支付宝受理了相应记账明细申请')
+    ) {
+      throw new BadRequestException('暂不支持解析支付宝记账本流水，请上传正确的支付宝交易明细CSV文件。');
+    }
+
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    
+    let name = '匿名';
+    let phoneNumber = '';
+    let startDate = '';
+    let endDate = '';
+    let headerIndex = -1;
+
+    // Scan up to 50 lines for metadata and header row
+    const limit = Math.min(50, lines.length);
+    for (let i = 0; i < limit; i++) {
+      const line = lines[i];
+      if (line.includes('姓名：') || line.includes('姓名:')) {
+        const parts = line.split(/：|:/);
+        if (parts.length > 1) {
+          name = parts[1].trim().replace(/^\[|\]$/g, '');
+        }
+      }
+      if (line.includes('支付宝账户：') || line.includes('支付宝账户:')) {
+        const parts = line.split(/：|:/);
+        if (parts.length > 1) {
+          phoneNumber = parts[1].trim().replace(/^\[|\]$/g, '');
+        }
+      }
+      if (line.includes('起始时间：') || line.includes('起始时间:')) {
+        const rangeMatch = line.match(/(?:起始时间)：\s*\[?(.*?)\]?\s+(?:终止时间)：\s*\[?(.*?)\]?$/) 
+                        || line.match(/(?:起始时间):\s*\[?(.*?)\]?\s+(?:终止时间):\s*\[?(.*?)\]?$/);
+        if (rangeMatch) {
+          const startClean = rangeMatch[1].replace(/^\[|\]$/g, '');
+          const endClean = rangeMatch[2].replace(/^\[|\]$/g, '');
+          startDate = startClean.split(' ')[0];
+          endDate = endClean.split(' ')[0];
+        }
+      }
+      if (line.includes('交易时间') && line.includes('金额') && (line.includes('收/支') || line.includes('收支'))) {
+        headerIndex = i;
+        break;
+      }
+    }
+
+    if (headerIndex === -1) {
+      throw new BadRequestException('未能在 CSV 文件中找到包含“交易时间”与“金额”的表头行');
+    }
+
+    const headerRow = lines[headerIndex];
+    const headers = this.parseCsvLine(headerRow);
+    const colMap: { [key: string]: number } = {};
+    headers.forEach((h, colNumber) => {
+      const cleanVal = h.trim();
+      if (cleanVal === '交易时间' || cleanVal === '记录时间' || cleanVal === '时间') {
+        colMap['交易时间'] = colNumber;
+      } else if (cleanVal === '收/支' || cleanVal === '收支' || cleanVal === '收支类型') {
+        colMap['收/支'] = colNumber;
+      } else if (cleanVal === '金额' || cleanVal === '金额(元)' || cleanVal === '金额（元）') {
+        colMap['金额(元)'] = colNumber;
+      } else if (cleanVal === '交易对方' || cleanVal === '商户' || cleanVal === '对方') {
+        colMap['交易对方'] = colNumber;
+      } else if (cleanVal === '商品说明' || cleanVal === '商品' || cleanVal === '商品名称') {
+        colMap['商品'] = colNumber;
+      } else if (cleanVal === '交易分类' || cleanVal === '分类' || cleanVal === '交易类型') {
+        colMap['交易类型'] = colNumber;
+      } else if (cleanVal === '备注') {
+        colMap['备注'] = colNumber;
+      } else if (cleanVal === '收/付款方式' || cleanVal === '账户' || cleanVal === '资金渠道' || cleanVal === '付款方式') {
+        colMap['支付方式'] = colNumber;
+      }
+    });
+
+    const getVal = (rowCells: string[], headerKey: string): string => {
+      const idx = colMap[headerKey];
+      if (idx === undefined || idx >= rowCells.length) return '';
+      return rowCells[idx].trim();
+    };
+
+    const transactions: Transaction[] = [];
+    for (let i = headerIndex + 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line) continue;
+      if (line.startsWith('---') || line.startsWith('===')) continue;
+
+      const cells = this.parseCsvLine(line);
+      const timeStr = getVal(cells, '交易时间');
+      if (!timeStr) continue;
+
+      const { dateStr, monthStr } = this.formatDateStr(timeStr);
+      if (!dateStr) continue;
+
+      const bizType = getVal(cells, '交易类型');
+      const typeStr = getVal(cells, '收/支');
+      let type: '收入' | '支出' | '不计收支' = '不计收支';
+      if (typeStr === '收入') type = '收入';
+      else if (typeStr === '支出') type = '支出';
+
+      const amountStr = getVal(cells, '金额(元)').replace(/，|,/g, '');
+      const amount = parseFloat(amountStr) || 0;
+
+      let counterparty = getVal(cells, '交易对方');
+      let product = getVal(cells, '商品') || getVal(cells, '备注') || '';
+
+      if (!counterparty) {
+        counterparty = '支付宝商户';
+      }
+
+      transactions.push({
+        date: dateStr,
+        month: monthStr,
+        type,
+        amount,
+        counterparty,
+        bizType,
+        product,
+      });
+    }
+
+    // 按交易时间排序
+    transactions.sort((a, b) => a.date.localeCompare(b.date));
+    
+    if (transactions.length > 0) {
+      if (!startDate) startDate = transactions[0].date.substring(0, 10);
+      if (!endDate) endDate = transactions[transactions.length - 1].date.substring(0, 10);
+    }
+
+    // 倒序排列（新交易在最上面）
+    transactions.reverse();
+
+    let totalIncome = 0;
+    let totalExpenditure = 0;
+    let selfIncome = 0;
+    let selfExpenditure = 0;
+
+    transactions.forEach((t) => {
+      if (t.type === '收入') {
+        totalIncome += t.amount;
+        if (t.counterparty.includes(name) || t.counterparty.includes('转入到余利宝') || t.counterparty.includes('余额宝')) selfIncome += t.amount;
+      } else if (t.type === '支出') {
+        totalExpenditure += t.amount;
+        if (t.counterparty.includes(name) || t.counterparty.includes('转入到余利宝') || t.counterparty.includes('余额宝')) selfExpenditure += t.amount;
+      }
+    });
+
+    totalIncome = Number(totalIncome.toFixed(2));
+    totalExpenditure = Number(totalExpenditure.toFixed(2));
+    selfIncome = Number(selfIncome.toFixed(2));
+    selfExpenditure = Number(selfExpenditure.toFixed(2));
+
+    return {
+      summary: {
+        id: '',
+        source: '支付宝',
+        name,
+        idNumber: '',
+        cardNumber: '',
+        phoneNumber,
+        startDate,
+        endDate,
+        totalIncome,
+        totalExpenditure,
+        selfIncome,
+        selfExpenditure,
+      },
+      transactions,
+    };
+  }
 }
 
-const DEFAULT_GLOBAL_KEYWORDS = [
-  // 餐饮
-  { category: '餐饮', keyword: '美团' },
-  { category: '餐饮', keyword: '饿了么' },
-  { category: '餐饮', keyword: '肯德基' },
-  { category: '餐饮', keyword: '麦当劳' },
-  { category: '餐饮', keyword: '星巴克' },
-  { category: '餐饮', keyword: '喜茶' },
-  { category: '餐饮', keyword: '海底捞' },
-  { category: '餐饮', keyword: '外卖' },
-  { category: '餐饮', keyword: '永福佳' },
-  { category: '餐饮', keyword: '零食有鸣' },
-  { category: '餐饮', keyword: '奶茶' },
-  { category: '餐饮', keyword: '咖啡' },
-  { category: '餐饮', keyword: '肠粉' },
-  { category: '餐饮', keyword: '麻辣烫' },
-  { category: '餐饮', keyword: '烧烤' },
-  { category: '餐饮', keyword: '火锅' },
-  { category: '餐饮', keyword: '曹记石磨粉' },
-  { category: '餐饮', keyword: '普宁颗汁' },
-  { category: '餐饮', keyword: '生鲜' },
-  { category: '餐饮', keyword: '食品' },
-  // 购物
-  { category: '购物', keyword: '美宜佳' },
-  { category: '购物', keyword: '超市' },
-  { category: '购物', keyword: '便利店' },
-  { category: '购物', keyword: '零食很忙' },
-  { category: '购物', keyword: '水果店' },
-  { category: '购物', keyword: '嘉盛水果' },
-  { category: '购物', keyword: '东明商行' },
-  { category: '购物', keyword: '百货' },
-  { category: '购物', keyword: '商行' },
-  { category: '购物', keyword: '淘宝' },
-  { category: '购物', keyword: '天猫' },
-  { category: '购物', keyword: '京东' },
-  { category: '购物', keyword: '拼多多' },
-  { category: '购物', keyword: '唯品会' },
-  { category: '购物', keyword: '苏宁' },
-  { category: '购物', keyword: '当当' },
-  { category: '购物', keyword: '得物' },
-  // 交通
-  { category: '交通', keyword: '滴滴' },
-  { category: '交通', keyword: '曹操出行' },
-  { category: '交通', keyword: '12306' },
-  { category: '交通', keyword: '铁路' },
-  { category: '交通', keyword: '地铁' },
-  { category: '交通', keyword: '公交' },
-  { category: '交通', keyword: '高德打车' },
-  { category: '交通', keyword: '花小猪' },
-  { category: '交通', keyword: 'T3出行' },
-  { category: '交通', keyword: '哈啰' },
-  { category: '交通', keyword: '停车场' },
-  { category: '交通', keyword: '中油碧辟' },
-  { category: '交通', keyword: '石化' },
-  { category: '交通', keyword: '顺易通' },
-  { category: '交通', keyword: '智租换电' },
-  { category: '交通', keyword: '互联互通停车' },
-  { category: '交通', keyword: '高速公路' },
-  // 娱乐
-  { category: '娱乐', keyword: '猫眼' },
-  { category: '娱乐', keyword: '淘票票' },
-  { category: '娱乐', keyword: '电影' },
-  { category: '娱乐', keyword: 'KTV' },
-  { category: '娱乐', keyword: '王者荣耀' },
-  { category: '娱乐', keyword: '和平精英' },
-  { category: '娱乐', keyword: '台球' },
-  { category: '娱乐', keyword: '小铁文娱' },
-  { category: '娱乐', keyword: '银河台球' },
-  { category: '娱乐', keyword: '街电' },
-  { category: '娱乐', keyword: '竹芒充电' },
-  { category: '娱乐', keyword: '怪兽充电' },
-  { category: '娱乐', keyword: '游戏' },
-  // 服务
-  { category: '服务', keyword: '手机充值' },
-  { category: '服务', keyword: '移动' },
-  { category: '服务', keyword: '中国移动' },
-  { category: '服务', keyword: '联通' },
-  { category: '服务', keyword: '中国联通' },
-  { category: '服务', keyword: '电信' },
-  { category: '服务', keyword: '中国电信' },
-  { category: '服务', keyword: '顺丰' },
-  { category: '服务', keyword: '顺丰速运' },
-  { category: '服务', keyword: '邮政' },
-  { category: '服务', keyword: '快递' },
-  { category: '服务', keyword: '医院' },
-  { category: '服务', keyword: '门诊' },
-  { category: '服务', keyword: '药店' },
-  { category: '服务', keyword: '诊所' },
-  { category: '服务', keyword: '保险' },
-  { category: '服务', keyword: '缴费' },
-  { category: '服务', keyword: '物业' },
-  { category: '服务', keyword: '宽带' }
-];
+
