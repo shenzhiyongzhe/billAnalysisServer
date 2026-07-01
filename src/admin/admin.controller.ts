@@ -26,8 +26,13 @@ export class AdminController {
   ) {}
 
   @Get('users')
-  async getUsers(@Query('search') search?: string) {
-    return this.adminService.getUsers(search);
+  async getUsers(
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('orderBy') orderBy?: string,
+  ) {
+    return this.adminService.getUsers(search, page, limit, orderBy);
   }
 
   @Put('users/:id/queries')

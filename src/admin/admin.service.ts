@@ -5,7 +5,21 @@ import { PrismaService } from '../prisma.service';
 export class AdminService {
   constructor(private readonly prisma: PrismaService) { }
 
-  async getUsers(search?: string) {
+  async getUsers(search?: string, pageStr?: string, limitStr?: string, orderByStr?: string) {
+    const page = pageStr ? Math.max(1, parseInt(pageStr, 10)) : 1;
+    const limit = limitStr ? Math.min(100, Math.max(1, parseInt(limitStr, 10))) : 20;
+    const skip = (page - 1) * limit;
+
+    const ORDER_MAP: Record<string, any> = {
+      createdAt_desc: { createdAt: 'desc' },
+      createdAt_asc: { createdAt: 'asc' },
+      remainingQueries_desc: { remainingQueries: 'desc' },
+      remainingQueries_asc: { remainingQueries: 'asc' },
+      totalQueries_desc: { totalQueries: 'desc' },
+      totalQueries_asc: { totalQueries: 'asc' },
+    };
+    const orderBy = ORDER_MAP[orderByStr ?? ''] ?? { createdAt: 'desc' };
+
     const where: any = {};
     if (search && search !== "undefined" && search !== "null" && search.trim() !== "") {
       where.OR = [
@@ -14,25 +28,36 @@ export class AdminService {
       ];
     }
 
-    return this.prisma.wechatUser.findMany({
-      where,
-      select: {
-        id: true,
-        openid: true,
-        displayId: true,
-        nickname: true,
-        avatar: true,
-        remainingQueries: true,
-        totalQueries: true,
-        shareCount: true,
-        level: true,
-        monthlyCardExpiry: true,
-        createdAt: true,
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
+    const [users, total] = await Promise.all([
+      this.prisma.wechatUser.findMany({
+        where,
+        select: {
+          id: true,
+          openid: true,
+          displayId: true,
+          nickname: true,
+          avatar: true,
+          remainingQueries: true,
+          totalQueries: true,
+          shareCount: true,
+          level: true,
+          monthlyCardExpiry: true,
+          createdAt: true,
+        },
+        orderBy,
+        skip,
+        take: limit,
+      }),
+      this.prisma.wechatUser.count({ where }),
+    ]);
+
+    return {
+      users,
+      total,
+      page,
+      limit,
+      hasMore: skip + users.length < total,
+    };
   }
 
   async updateUserQueries(userId: number, remainingQueries: number, adminId?: number, reason?: string) {
