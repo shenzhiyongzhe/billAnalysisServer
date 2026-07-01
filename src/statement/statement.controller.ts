@@ -83,4 +83,21 @@ export class StatementController {
   getResult(@Param('id') id: string, @CurrentUserId() userId: number) {
     return this.statementService.getResultBundle(parseInt(id, 10), userId);
   }
+
+  @Post('custom-category')
+  async saveCustomCategory(
+    @CurrentUserId() userId: number,
+    @Body('counterparty') counterparty: string,
+    @Body('category') category: string,
+  ) {
+    if (!counterparty || !category) {
+      throw new BadRequestException('Counterparty and category are required');
+    }
+    return this.statementService.saveUserCustomCategory(userId, counterparty.trim(), category.trim());
+  }
+
+  @Get('custom-categories')
+  async getCustomCategories(@CurrentUserId() userId: number) {
+    return this.statementService.getUserCustomCategories(userId);
+  }
 }

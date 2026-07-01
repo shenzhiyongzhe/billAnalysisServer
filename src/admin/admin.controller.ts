@@ -3,11 +3,13 @@ import {
   Get,
   Post,
   Put,
+  Delete,
   Body,
   Param,
   ParseIntPipe,
   UseGuards,
   Query,
+  BadRequestException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AdminGuard } from './admin.guard';
@@ -73,5 +75,26 @@ export class AdminController {
   @Get('users/ranking')
   async getUserRanking() {
     return this.adminService.getUserRanking();
+  }
+
+  @Get('category-keywords')
+  async getGlobalKeywords() {
+    return this.adminService.getGlobalKeywords();
+  }
+
+  @Post('category-keywords')
+  async addGlobalKeyword(
+    @Body('category') category: string,
+    @Body('keyword') keyword: string,
+  ) {
+    if (!category || !keyword) {
+      throw new BadRequestException('Category and keyword are required');
+    }
+    return this.adminService.addGlobalKeyword(category, keyword);
+  }
+
+  @Delete('category-keywords/:id')
+  async deleteGlobalKeyword(@Param('id', ParseIntPipe) id: number) {
+    return this.adminService.deleteGlobalKeyword(id);
   }
 }

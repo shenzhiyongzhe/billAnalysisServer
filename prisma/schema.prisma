@@ -24,6 +24,7 @@ model WechatUser {
   createdAt        DateTime @default(now())
   queryOperationLogs QueryOperationRecord[] @relation("TargetUserRelation")
   adminOperationLogs QueryOperationRecord[] @relation("AdminUserRelation")
+  customCategories   UserCustomCategory[]
 }
 
 model ShareRecord {
@@ -99,3 +100,24 @@ model DailyStatistics {
   avgQueriesPerDay Float  @default(0)
   createdAt      DateTime @default(now())
 }
+
+model GlobalCategoryKeyword {
+  id        Int      @id @default(autoincrement())
+  category  String   // e.g. "餐饮", "购物", "交通", "娱乐", "服务", "转账", "收入"
+  keyword   String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model UserCustomCategory {
+  id           Int        @id @default(autoincrement())
+  userId       Int
+  user         WechatUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  counterparty String     // 交易对方名称，精确匹配
+  category     String     // e.g. "餐饮", "购物", "交通", "娱乐", "服务", "转账", "收入", "其他"
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([userId, counterparty])
+}
+

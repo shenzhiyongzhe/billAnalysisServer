@@ -308,4 +308,24 @@ export class AdminService {
       })),
     };
   }
+
+  async getGlobalKeywords() {
+    return this.prisma.globalCategoryKeyword.findMany({
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async addGlobalKeyword(category: string, keyword: string) {
+    return this.prisma.globalCategoryKeyword.upsert({
+      where: { keyword: keyword.trim() },
+      update: { category: category.trim() },
+      create: { category: category.trim(), keyword: keyword.trim() },
+    });
+  }
+
+  async deleteGlobalKeyword(id: number) {
+    return this.prisma.globalCategoryKeyword.delete({
+      where: { id },
+    });
+  }
 }

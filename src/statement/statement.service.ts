@@ -77,6 +77,7 @@ export interface Transaction {
   counterparty: string;
   bizType?: string;
   product?: string;
+  category?: string;
 }
 
 export interface StatementData {
@@ -705,13 +706,15 @@ export class StatementService {
       }
     }
 
+    const classifiedTransactions = await this.classifyTransactionsForUser(userId, data.transactions);
+
     return {
       summary: {
         ...summary,
         firstQueryTime: firstQueryTime ? firstQueryTime.toISOString() : null,
         queryCount,
       },
-      raw: data.transactions,
+      raw: classifiedTransactions,
     };
   }
 
@@ -861,7 +864,15 @@ export class StatementService {
 
         const counterparty = fullText.substring(typeMatch[0].length).trim().split(/\s+/)[0] || '支付宝商户';
 
-        transactions.push({ date, month, type, amount, counterparty });
+        const startIdx = fullText.indexOf(counterparty) + counterparty.length;
+        const endIdx = fullText.indexOf(amountMatch[0]);
+        let product = '';
+        if (startIdx >= 0 && endIdx > startIdx) {
+          product = fullText.substring(startIdx, endIdx).trim();
+          product = product.replace(/(?:招商银行|交通银行|工商银行|建设银行|农业银行|中国银行|邮储银行|中信银行|光大银行|华夏银行|民生银行|广发银行|深发银行|招商|交行|工行|建行|农行|中行|网商银行|网商|花呗|余额宝|账户余额|余额|红包|储蓄卡|信用卡|借记卡)\(?[0-9]*\)?&?/g, '').trim();
+        }
+
+        transactions.push({ date, month, type, amount, counterparty, product });
       }
     } else if (source === '招商银行') {
       const nameMatch = text.match(/户\s*名[：:]\s*([^\s\n]+)/);
@@ -1404,4 +1415,215 @@ export class StatementService {
   private isWechatMerchantId(str: string): boolean {
     return str === '/' || (str.length >= 10 && /^[0-9a-zA-Z_\-]+$/.test(str));
   }
+
+  // --- Dynamic Classification Engine ---
+  async saveUserCustomCategory(userId: number, counterparty: string, category: string) {
+    return this.prisma.userCustomCategory.upsert({
+      where: {
+        userId_counterparty: {
+          userId,
+          counterparty,
+        },
+      },
+      update: {
+        category,
+      },
+      create: {
+        userId,
+        counterparty,
+        category,
+      },
+    });
+  }
+
+  async getUserCustomCategories(userId: number) {
+    return this.prisma.userCustomCategory.findMany({
+      where: { userId },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+
+  async classifyTransactionsForUser(userId: number, transactions: Transaction[]): Promise<Transaction[]> {
+    // 1. Fetch user custom categories
+    const userCustomList = await this.prisma.userCustomCategory.findMany({
+      where: { userId },
+    });
+    const userCustomMap = new Map<string, string>();
+    for (const uc of userCustomList) {
+      userCustomMap.set(uc.counterparty.trim(), uc.category);
+    }
+
+    // 2. Fetch global keywords, self-seed if empty
+    let globalKeywordsList = await this.prisma.globalCategoryKeyword.findMany();
+    if (globalKeywordsList.length === 0) {
+      await this.prisma.globalCategoryKeyword.createMany({
+        data: DEFAULT_GLOBAL_KEYWORDS.map(item => ({
+          category: item.category,
+          keyword: item.keyword,
+        })),
+        skipDuplicates: true,
+      });
+      globalKeywordsList = await this.prisma.globalCategoryKeyword.findMany();
+    }
+
+    const globalKeywordsMap = new Map<string, string[]>();
+    for (const gk of globalKeywordsList) {
+      const list = globalKeywordsMap.get(gk.category) || [];
+      list.push(gk.keyword.trim());
+      globalKeywordsMap.set(gk.category, list);
+    }
+
+    // 3. Classify transactions
+    return transactions.map(t => {
+      const category = this.determineCategory(t, userCustomMap, globalKeywordsMap);
+      return {
+        ...t,
+        category,
+      };
+    });
+  }
+
+  private determineCategory(
+    tx: Transaction,
+    userCustomMap: Map<string, string>,
+    globalKeywordsMap: Map<string, string[]>,
+  ): string {
+    const counterparty = (tx.counterparty || '').trim();
+    const product = (tx.product || '').trim();
+    const bizType = (tx.bizType || '').trim();
+    const type = tx.type; // '收入' | '支出' | '不计收支'
+    const combined = `${counterparty}${product}`;
+
+    // 1. User custom override has highest priority
+    if (userCustomMap.has(counterparty)) {
+      return userCustomMap.get(counterparty)!;
+    }
+
+    // 2. Income rule
+    const isIncomeType = type === '收入' && (
+      bizType.includes('二维码收款') ||
+      bizType.includes('微信红包') ||
+      bizType.includes('退款') ||
+      combined.includes('退款') ||
+      combined.includes('红包') ||
+      bizType.includes('红包')
+    );
+    if (isIncomeType) {
+      return '收入';
+    }
+
+    // 3. Transfer rule
+    const isTransferType = bizType === '转账' || bizType.includes('转账') || bizType.includes('朋友转账');
+    const transferKeywords = globalKeywordsMap.get('转账') || [];
+    const matchesTransferKeyword = transferKeywords.some(kw => combined.includes(kw));
+
+    if (isTransferType || matchesTransferKeyword) {
+      return '转账';
+    }
+
+    // 4. Global keywords match for other categories
+    const categories = ['餐饮', '购物', '交通', '娱乐', '服务'];
+    for (const cat of categories) {
+      const kws = globalKeywordsMap.get(cat) || [];
+      if (kws.some(kw => combined.includes(kw) || bizType.includes(kw))) {
+        return cat;
+      }
+    }
+
+    return '其他';
+  }
 }
+
+const DEFAULT_GLOBAL_KEYWORDS = [
+  // 餐饮
+  { category: '餐饮', keyword: '美团' },
+  { category: '餐饮', keyword: '饿了么' },
+  { category: '餐饮', keyword: '肯德基' },
+  { category: '餐饮', keyword: '麦当劳' },
+  { category: '餐饮', keyword: '星巴克' },
+  { category: '餐饮', keyword: '喜茶' },
+  { category: '餐饮', keyword: '海底捞' },
+  { category: '餐饮', keyword: '外卖' },
+  { category: '餐饮', keyword: '永福佳' },
+  { category: '餐饮', keyword: '零食有鸣' },
+  { category: '餐饮', keyword: '奶茶' },
+  { category: '餐饮', keyword: '咖啡' },
+  { category: '餐饮', keyword: '肠粉' },
+  { category: '餐饮', keyword: '麻辣烫' },
+  { category: '餐饮', keyword: '烧烤' },
+  { category: '餐饮', keyword: '火锅' },
+  { category: '餐饮', keyword: '曹记石磨粉' },
+  { category: '餐饮', keyword: '普宁颗汁' },
+  { category: '餐饮', keyword: '生鲜' },
+  { category: '餐饮', keyword: '食品' },
+  // 购物
+  { category: '购物', keyword: '美宜佳' },
+  { category: '购物', keyword: '超市' },
+  { category: '购物', keyword: '便利店' },
+  { category: '购物', keyword: '零食很忙' },
+  { category: '购物', keyword: '水果店' },
+  { category: '购物', keyword: '嘉盛水果' },
+  { category: '购物', keyword: '东明商行' },
+  { category: '购物', keyword: '百货' },
+  { category: '购物', keyword: '商行' },
+  { category: '购物', keyword: '淘宝' },
+  { category: '购物', keyword: '天猫' },
+  { category: '购物', keyword: '京东' },
+  { category: '购物', keyword: '拼多多' },
+  { category: '购物', keyword: '唯品会' },
+  { category: '购物', keyword: '苏宁' },
+  { category: '购物', keyword: '当当' },
+  { category: '购物', keyword: '得物' },
+  // 交通
+  { category: '交通', keyword: '滴滴' },
+  { category: '交通', keyword: '曹操出行' },
+  { category: '交通', keyword: '12306' },
+  { category: '交通', keyword: '铁路' },
+  { category: '交通', keyword: '地铁' },
+  { category: '交通', keyword: '公交' },
+  { category: '交通', keyword: '高德打车' },
+  { category: '交通', keyword: '花小猪' },
+  { category: '交通', keyword: 'T3出行' },
+  { category: '交通', keyword: '哈啰' },
+  { category: '交通', keyword: '停车场' },
+  { category: '交通', keyword: '中油碧辟' },
+  { category: '交通', keyword: '石化' },
+  { category: '交通', keyword: '顺易通' },
+  { category: '交通', keyword: '智租换电' },
+  { category: '交通', keyword: '互联互通停车' },
+  { category: '交通', keyword: '高速公路' },
+  // 娱乐
+  { category: '娱乐', keyword: '猫眼' },
+  { category: '娱乐', keyword: '淘票票' },
+  { category: '娱乐', keyword: '电影' },
+  { category: '娱乐', keyword: 'KTV' },
+  { category: '娱乐', keyword: '王者荣耀' },
+  { category: '娱乐', keyword: '和平精英' },
+  { category: '娱乐', keyword: '台球' },
+  { category: '娱乐', keyword: '小铁文娱' },
+  { category: '娱乐', keyword: '银河台球' },
+  { category: '娱乐', keyword: '街电' },
+  { category: '娱乐', keyword: '竹芒充电' },
+  { category: '娱乐', keyword: '怪兽充电' },
+  { category: '娱乐', keyword: '游戏' },
+  // 服务
+  { category: '服务', keyword: '手机充值' },
+  { category: '服务', keyword: '移动' },
+  { category: '服务', keyword: '中国移动' },
+  { category: '服务', keyword: '联通' },
+  { category: '服务', keyword: '中国联通' },
+  { category: '服务', keyword: '电信' },
+  { category: '服务', keyword: '中国电信' },
+  { category: '服务', keyword: '顺丰' },
+  { category: '服务', keyword: '顺丰速运' },
+  { category: '服务', keyword: '邮政' },
+  { category: '服务', keyword: '快递' },
+  { category: '服务', keyword: '医院' },
+  { category: '服务', keyword: '门诊' },
+  { category: '服务', keyword: '药店' },
+  { category: '服务', keyword: '诊所' },
+  { category: '服务', keyword: '保险' },
+  { category: '服务', keyword: '缴费' },
+  { category: '服务', keyword: '物业' },
+  { category: '服务', keyword: '宽带' }
+];
