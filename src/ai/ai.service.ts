@@ -69,7 +69,10 @@ const SYSTEM_PROMPT = `你是一位专业的借贷风控分析师，擅长通过
 2. 多头借贷、以贷养赌坚决拒绝
 3. 快进快出+凌晨活跃=高度疑似赌博
 4. 职业造假、满嘴跑火车=高风险
-5. 收入与口述严重不符=需核实`;
+5. 收入与口述严重不符=需核实
+
+- 严禁在回复中给出“拒绝放贷”、“建议放贷”或任何信贷决策结论，仅做风险因素罗列。
+`;
 
 interface Transaction {
   date: string;
@@ -156,7 +159,7 @@ interface RiskFeatures {
 export class AiService {
   private readonly logger = new Logger(AiService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   private async assertOwnership(recordId: number, userId: number): Promise<void> {
     const record = await this.prisma.queryRecord.findUnique({
@@ -413,12 +416,12 @@ export class AiService {
     const loanText =
       ls.suspectedSequences.length > 0
         ? ls.suspectedSequences
-            .map(
-              (s) =>
-                `  - 对手方「${s.counterparty}」，固定金额¥${s.amount}，共${s.count}笔，` +
-                `时间跨度${s.spanDays}天(${s.firstDate}~${s.lastDate})，合计¥${s.totalAmount}`,
-            )
-            .join('\n') + `\n  合计疑似天退金额：¥${ls.totalLoanAmount}`
+          .map(
+            (s) =>
+              `  - 对手方「${s.counterparty}」，固定金额¥${s.amount}，共${s.count}笔，` +
+              `时间跨度${s.spanDays}天(${s.firstDate}~${s.lastDate})，合计¥${s.totalAmount}`,
+          )
+          .join('\n') + `\n  合计疑似天退金额：¥${ls.totalLoanAmount}`
         : '  未发现明显固定金额天退序列（不代表无借贷，请结合交易对手方综合判断）';
 
     const gamblingText = [
@@ -427,9 +430,9 @@ export class AiService {
       `  快进快出事件（同天同额±10%）：${gs.fastInFastOutEvents}次`,
       gs.suspectedGamblingCounterparties.length > 0
         ? '  疑似赌博渠道：\n' +
-          gs.suspectedGamblingCounterparties
-            .map((c) => `    - ${c.counterparty} 支出¥${c.totalOut} 收入¥${c.totalIn} 净亏损¥${c.netLoss}`)
-            .join('\n')
+        gs.suspectedGamblingCounterparties
+          .map((c) => `    - ${c.counterparty} 支出¥${c.totalOut} 收入¥${c.totalIn} 净亏损¥${c.netLoss}`)
+          .join('\n')
         : '  未识别到已知赌博关键词渠道（不代表无赌博，请结合高频小额转账判断）',
     ].join('\n');
 
