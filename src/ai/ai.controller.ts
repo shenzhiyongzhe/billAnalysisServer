@@ -18,22 +18,20 @@ export class AiController {
 
   /**
    * POST /api/bill-analysis/ai/statements/:id/analyze
-   * Body: { occupation?: string, monthlyIncome?: string }
+   * Body: { userNotes?: string }
    * Returns: { report: string }
    */
   @Post('statements/:id/analyze')
   async analyzeStatement(
     @Param('id') id: string,
     @CurrentUserId() userId: number,
-    @Body('occupation') occupation = '',
-    @Body('monthlyIncome') monthlyIncome = '',
+    @Body('userNotes') userNotes = '',
   ) {
     try {
       const report = await this.aiService.analyzeStatement(
         parseInt(id, 10),
         userId,
-        occupation,
-        monthlyIncome,
+        userNotes,
       );
       return { report };
     } catch (err: unknown) {

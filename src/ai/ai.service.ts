@@ -148,8 +148,7 @@ interface RiskFeatures {
     byAmount: TopCounterparty[];
   };
   userInput: {
-    occupation: string;
-    monthlyIncome: string;
+    userNotes: string;
   };
 }
 
@@ -177,21 +176,52 @@ export class AiService {
     }
   }
 
+  /**
+   * Enrich raw summaryJson with derived fields (maskedIdNumber, gender, age, nativePlace)
+   * from idNumber, mirroring StatementService.enrichSummary logic.
+   */
+  private enrichSummaryJson(summaryJson: Record<string, unknown>): Record<string, unknown> {
+    const enriched = { ...summaryJson };
+    const idNumber = enriched.idNumber as string | undefined;
+
+    if (idNumber && !enriched.maskedIdNumber) {
+      enriched.maskedIdNumber = idNumber.length > 8
+        ? idNumber.slice(0, 4) + '*'.repeat(idNumber.length - 8) + idNumber.slice(-4)
+        : idNumber;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const idcard = require('idcard');
+        const info = idcard.info(idNumber);
+        if (info && info.valid) {
+          if (!enriched.nativePlace) enriched.nativePlace = info.address;
+          if (!enriched.genderText) enriched.genderText = info.gender === 'M' ? '男' : info.gender === 'F' ? '女' : '-';
+          if (!enriched.age) enriched.age = info.age;
+        }
+      } catch (e) {
+        this.logger.error('Failed to parse ID card in AI service:', e);
+      }
+    }
+    return enriched;
+  }
+
   private extractRiskFeatures(
     summaryJson: Record<string, unknown>,
     transactions: Transaction[],
-    userInput: { occupation: string; monthlyIncome: string },
+    userInput: { userNotes: string },
   ): RiskFeatures {
+    // --- Enrich summary with id card derived fields ---
+    const enriched = this.enrichSummaryJson(summaryJson);
+
     // --- Basic Info ---
     const basicInfo = {
-      name: (summaryJson.name as string) || '未知',
-      maskedIdNumber: summaryJson.maskedIdNumber as string | undefined,
-      genderText: summaryJson.genderText as string | undefined,
-      age: summaryJson.age as number | undefined,
-      nativePlace: summaryJson.nativePlace as string | undefined,
-      source: (summaryJson.source as string) || '未知',
-      startDate: (summaryJson.startDate as string) || '',
-      endDate: (summaryJson.endDate as string) || '',
+      name: (enriched.name as string) || '未知',
+      maskedIdNumber: enriched.maskedIdNumber as string | undefined,
+      genderText: enriched.genderText as string | undefined,
+      age: enriched.age as number | undefined,
+      nativePlace: enriched.nativePlace as string | undefined,
+      source: (enriched.source as string) || '未知',
+      startDate: (enriched.startDate as string) || '',
+      endDate: (enriched.endDate as string) || '',
     };
 
     // --- Monthly stats ---
@@ -441,8 +471,7 @@ ${gamblingText}
 ${topCpText}
 
 ==== 用户口述信息 ====
-口述职业：${ui.occupation || '未提供'}
-口述月收入：${ui.monthlyIncome ? '¥' + ui.monthlyIncome : '未提供'}
+${ui.userNotes ? ui.userNotes : '未提供口述信息'}
 
 请严格按系统提示中的 Markdown 格式输出风控分析报告。`;
   }
@@ -450,8 +479,7 @@ ${topCpText}
   async analyzeStatement(
     recordId: number,
     userId: number,
-    occupation: string,
-    monthlyIncome: string,
+    userNotes: string,
   ): Promise<string> {
     await this.assertOwnership(recordId, userId);
 
@@ -476,7 +504,7 @@ ${topCpText}
     const features = this.extractRiskFeatures(
       record.summaryJson as Record<string, unknown>,
       transactions,
-      { occupation, monthlyIncome },
+      { userNotes },
     );
 
     const userPrompt = this.buildUserPrompt(features);
