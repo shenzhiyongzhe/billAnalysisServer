@@ -1,6 +1,7 @@
 import {
   Controller,
   Post,
+  Get,
   Param,
   Body,
   UseGuards,
@@ -38,6 +39,55 @@ export class AiController {
       const error = err as Error;
       throw new HttpException(
         { message: error.message || 'AI 分析失败，请稍后重试' },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * GET /api/bill-analysis/ai/statements/:id/reports
+   * Returns: { reports: Array<{ id, userNotes, model, createdAt }> }
+   */
+  @Get('statements/:id/reports')
+  async listReports(
+    @Param('id') id: string,
+    @CurrentUserId() userId: number,
+  ) {
+    try {
+      const reports = await this.aiService.listReports(
+        parseInt(id, 10),
+        userId,
+      );
+      return { reports };
+    } catch (err: unknown) {
+      const error = err as Error;
+      throw new HttpException(
+        { message: error.message || '获取分析报告列表失败' },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * GET /api/bill-analysis/ai/statements/:id/reports/:reportId
+   * Returns: { id, userNotes, report, model, createdAt }
+   */
+  @Get('statements/:id/reports/:reportId')
+  async getReport(
+    @Param('id') id: string,
+    @Param('reportId') reportId: string,
+    @CurrentUserId() userId: number,
+  ) {
+    try {
+      return await this.aiService.getReport(
+        parseInt(id, 10),
+        parseInt(reportId, 10),
+        userId,
+      );
+    } catch (err: unknown) {
+      const error = err as Error;
+      throw new HttpException(
+        { message: error.message || '获取分析报告失败' },
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }

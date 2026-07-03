@@ -25,6 +25,7 @@ model WechatUser {
   queryOperationLogs QueryOperationRecord[] @relation("TargetUserRelation")
   adminOperationLogs QueryOperationRecord[] @relation("AdminUserRelation")
   customCategories   UserCustomCategory[]
+  aiReports          AiAnalysisReport[]
 }
 
 model ShareRecord {
@@ -70,6 +71,7 @@ model QueryRecord {
   startDate       DateTime?
   endDate         DateTime?
   createdAt       DateTime @default(now())
+  aiReports       AiAnalysisReport[]
 }
 
 model SystemConfig {
@@ -122,3 +124,16 @@ model UserCustomCategory {
   @@unique([userId, counterparty])
 }
 
+model AiAnalysisReport {
+  id            Int         @id @default(autoincrement())
+  queryRecordId Int
+  queryRecord   QueryRecord @relation(fields: [queryRecordId], references: [id], onDelete: Cascade)
+  userId        Int
+  user          WechatUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userNotes     String      @default("")
+  report        String      @db.Text
+  model         String?
+  createdAt     DateTime    @default(now())
+
+  @@index([queryRecordId, createdAt(sort: Desc)])
+}

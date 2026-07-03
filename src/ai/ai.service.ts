@@ -515,7 +515,9 @@ ${ui.userNotes ? ui.userNotes : '未提供口述信息'}
 
     if (!apiBase || !apiKey || apiKey === 'your-api-key-here') {
       this.logger.warn('AI API not configured, returning placeholder response');
-      return `> ⚠️ **AI 服务尚未配置**\n\n请在服务器 \`.env\` 文件中填写以下配置项，然后重启服务：\n\`\`\`\nAI_API_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1\nAI_API_KEY=your-real-api-key\nAI_MODEL=qwen-plus\n\`\`\``;
+      const placeholder = `> ⚠️ **AI 服务尚未配置**\n\n请在服务器 \`.env\` 文件中填写以下配置项，然后重启服务：\n\`\`\`\nAI_API_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1\nAI_API_KEY=your-real-api-key\nAI_MODEL=qwen-plus\n\`\`\``;
+      await this.saveReport(recordId, userId, userNotes, placeholder, model);
+      return placeholder;
     }
 
     this.logger.log(`Calling AI API for record ${recordId}, model=${model}, transactions=${transactions.length}`);
@@ -551,6 +553,66 @@ ${ui.userNotes ? ui.userNotes : '未提供口述信息'}
       throw new Error('AI 返回数据格式异常');
     }
 
+    await this.saveReport(recordId, userId, userNotes, content, model);
     return content;
+  }
+
+  private async saveReport(
+    recordId: number,
+    userId: number,
+    userNotes: string,
+    report: string,
+    model: string,
+  ): Promise<void> {
+    await this.prisma.aiAnalysisReport.create({
+      data: {
+        queryRecordId: recordId,
+        userId,
+        userNotes: userNotes.trim(),
+        report,
+        model,
+      },
+    });
+  }
+
+  async listReports(recordId: number, userId: number) {
+    await this.assertOwnership(recordId, userId);
+
+    const reports = await this.prisma.aiAnalysisReport.findMany({
+      where: { queryRecordId: recordId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        userNotes: true,
+        model: true,
+        createdAt: true,
+      },
+    });
+
+    return reports;
+  }
+
+  async getReport(recordId: number, reportId: number, userId: number) {
+    await this.assertOwnership(recordId, userId);
+
+    const report = await this.prisma.aiAnalysisReport.findFirst({
+      where: {
+        id: reportId,
+        queryRecordId: recordId,
+      },
+      select: {
+        id: true,
+        userNotes: true,
+        report: true,
+        model: true,
+        createdAt: true,
+      },
+    });
+
+    if (!report) {
+      throw new NotFoundException('分析报告不存在');
+    }
+
+    return report;
   }
 }
