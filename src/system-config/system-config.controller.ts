@@ -1,4 +1,4 @@
-import { Controller, Get, Put, Body, UseGuards, ParseIntPipe } from '@nestjs/common';
+import { Controller, Get, Put, Post, Body, UseGuards, ParseIntPipe } from '@nestjs/common';
 import { SystemConfigService } from './system-config.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AdminGuard } from '../admin/admin.guard';
@@ -25,5 +25,23 @@ export class SystemConfigController {
     @Body('noticeText') noticeText: string,
   ) {
     return this.systemConfigService.updateAdminConfig(defaultRemainingQueries, noticeText);
+  }
+
+  @Get('admin/ai-prompt')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  async getAdminAiSystemPrompt() {
+    return this.systemConfigService.getAdminAiSystemPrompt();
+  }
+
+  @Put('admin/ai-prompt')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  async updateAdminAiSystemPrompt(@Body('prompt') prompt: string) {
+    return this.systemConfigService.updateAiSystemPrompt(prompt);
+  }
+
+  @Post('admin/ai-prompt/reset')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  async resetAdminAiSystemPrompt() {
+    return this.systemConfigService.resetAiSystemPrompt();
   }
 }

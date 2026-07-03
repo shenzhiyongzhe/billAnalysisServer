@@ -7,5 +7,6 @@ import { AuthModule } from '../auth/auth.module';
   imports: [AuthModule],
   controllers: [SystemConfigController],
   providers: [SystemConfigService],
+  exports: [SystemConfigService],
 })
 export class SystemConfigModule {}

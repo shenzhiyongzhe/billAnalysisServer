@@ -1,5 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
+import {
+  AI_SYSTEM_PROMPT_CONFIG_KEY,
+  DEFAULT_AI_SYSTEM_PROMPT,
+} from './ai-system-prompt.default';
 
 @Injectable()
 export class SystemConfigService {
@@ -42,5 +46,53 @@ export class SystemConfigService {
     });
 
     return { success: true };
+  }
+
+  async getAiSystemPrompt(): Promise<string> {
+    const config = await this.prisma.systemConfig.findUnique({
+      where: { key: AI_SYSTEM_PROMPT_CONFIG_KEY },
+    });
+    const prompt = config?.value?.trim();
+    return prompt || DEFAULT_AI_SYSTEM_PROMPT;
+  }
+
+  async getAdminAiSystemPrompt() {
+    const config = await this.prisma.systemConfig.findUnique({
+      where: { key: AI_SYSTEM_PROMPT_CONFIG_KEY },
+    });
+    const stored = config?.value?.trim();
+    return {
+      prompt: stored || DEFAULT_AI_SYSTEM_PROMPT,
+      isDefault: !stored,
+    };
+  }
+
+  async updateAiSystemPrompt(prompt: string) {
+    const trimmed = prompt.trim();
+    if (!trimmed) {
+      throw new BadRequestException('提示词不能为空');
+    }
+
+    await this.prisma.systemConfig.upsert({
+      where: { key: AI_SYSTEM_PROMPT_CONFIG_KEY },
+      update: { value: trimmed },
+      create: { key: AI_SYSTEM_PROMPT_CONFIG_KEY, value: trimmed },
+    });
+
+    return { success: true };
+  }
+
+  async resetAiSystemPrompt() {
+    await this.prisma.systemConfig.deleteMany({
+      where: { key: AI_SYSTEM_PROMPT_CONFIG_KEY },
+    });
+    return {
+      success: true,
+      prompt: DEFAULT_AI_SYSTEM_PROMPT,
+    };
+  }
+
+  getDefaultAiSystemPrompt() {
+    return DEFAULT_AI_SYSTEM_PROMPT;
   }
 }
