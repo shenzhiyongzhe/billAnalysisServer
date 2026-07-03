@@ -18,32 +18,6 @@ function resolveQueryServerBaseUrl(): string {
 
 const QUERY_SERVER_BASE_URL = resolveQueryServerBaseUrl();
 
-const HIGH_RISK_CACHE_TTL_MS = 30 * 60 * 1000;
-const HIGH_RISK_CACHE_MAX_SIZE = 500;
-const highRiskCache = new Map<string, { value: boolean; expiresAt: number }>();
-
-function highRiskCacheKey(name: string, endOfId: string | null): string {
-  return `${name}|${endOfId ?? ''}`;
-}
-
-function getCachedHighRisk(key: string): boolean | undefined {
-  const entry = highRiskCache.get(key);
-  if (!entry) return undefined;
-  if (entry.expiresAt <= Date.now()) {
-    highRiskCache.delete(key);
-    return undefined;
-  }
-  return entry.value;
-}
-
-function setCachedHighRisk(key: string, value: boolean): void {
-  if (highRiskCache.size >= HIGH_RISK_CACHE_MAX_SIZE) {
-    const oldest = highRiskCache.keys().next().value;
-    if (oldest) highRiskCache.delete(oldest);
-  }
-  highRiskCache.set(key, { value, expiresAt: Date.now() + HIGH_RISK_CACHE_TTL_MS });
-}
-
 function queryServerUrl(path: string, searchParams?: URLSearchParams): string {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   const url = `${QUERY_SERVER_BASE_URL}${normalizedPath}`;
@@ -696,10 +670,6 @@ export class StatementService {
     if (!summary.name || summary.name === '未知') return false;
 
     const endOfId = this.extractEndOfId(summary);
-    const cacheKey = highRiskCacheKey(summary.name, endOfId);
-    const cached = getCachedHighRisk(cacheKey);
-    if (cached !== undefined) return cached;
-
     const params = new URLSearchParams({ name: summary.name });
     if (endOfId) params.set('end_of_id', endOfId);
 
@@ -718,9 +688,7 @@ export class StatementService {
       }
 
       const data = await response.json();
-      const isHighRisk = data?.result?.isHighRisk === true;
-      setCachedHighRisk(cacheKey, isHighRisk);
-      return isHighRisk;
+      return data?.result?.isHighRisk === true;
     } catch (err) {
       this.logger.warn('check-high-risk request error:', err);
       return false;
