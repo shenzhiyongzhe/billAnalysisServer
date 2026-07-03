@@ -9,6 +9,7 @@ import { AdminModule } from './admin/admin.module';
 import { ShareModule } from './share/share.module';
 import { SystemConfigModule } from './system-config/system-config.module';
 import { StatisticsModule } from './statistics/statistics.module';
+import { AiModule } from './ai/ai.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { StatisticsModule } from './statistics/statistics.module';
     ShareModule,
     SystemConfigModule,
     StatisticsModule,
+    AiModule,
     ScheduleModule.forRoot()
   ],
   controllers: [AppController],
