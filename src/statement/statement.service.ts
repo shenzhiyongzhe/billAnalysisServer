@@ -88,6 +88,7 @@ export interface StatementResultBundle {
 export class StatementService {
   private uploadsDir = path.join(process.cwd(), 'uploads');
   private readonly logger = new Logger(StatementService.name);
+  private progressStore = new Map<number, { progress: number; stage: string; detail: string }>();
 
   constructor(private prisma: PrismaService) {
     if (!fs.existsSync(this.uploadsDir)) {
@@ -95,7 +96,14 @@ export class StatementService {
     }
   }
 
-  private async parsePdfText(buffer: Buffer, password?: string): Promise<string> {
+  private async parsePdfText(
+    buffer: Buffer,
+    password?: string,
+    onProgress?: (progress: number, stage: string, detail: string) => void,
+  ): Promise<string> {
+    const localCMapUrl = path.resolve(process.cwd(), 'node_modules/pdfjs-dist/cmaps').replace(/\\/g, '/') + '/';
+    const localStandardFontDataUrl = path.resolve(process.cwd(), 'node_modules/pdfjs-dist/standard_fonts').replace(/\\/g, '/') + '/';
+
     const workerCode = `
       const { parentPort } = require('worker_threads');
       const { PDFParse } = require('pdf-parse');
@@ -104,11 +112,39 @@ export class StatementService {
 
       parentPort.on('message', async (message) => {
         try {
-          const { buffer, password } = message;
-          const parser = new PDFParse({ data: Buffer.from(buffer), password });
+          const { buffer, password, cMapUrl, standardFontDataUrl } = message;
+          const parser = new PDFParse({
+            data: Buffer.from(buffer),
+            password,
+            cMapUrl,
+            cMapPacked: true,
+            standardFontDataUrl,
+            verbosity: 0
+          });
           try {
-            const result = await parser.getText();
-            parentPort.postMessage({ success: true, text: result.text });
+            const doc = await parser.load();
+            const total = doc.numPages;
+            const pages = [];
+            const getTextOptions = {
+              pageJoiner: '',
+              disableNormalization: true
+            };
+            
+            for (let s = 1; s <= total; s++) {
+              parentPort.postMessage({
+                type: 'progress',
+                progress: Math.round(((s - 1) / total) * 90),
+                stage: 'parsing_pdf',
+                detail: \`正在解析第 \${s}/\${total} 页...\`
+              });
+              const page = await doc.getPage(s);
+              const pageText = await parser.getPageText(page, getTextOptions, total);
+              pages.push(pageText);
+              page.cleanup();
+            }
+            
+            const fullText = pages.join('\\n\\n') + '\\n\\n';
+            parentPort.postMessage({ success: true, text: fullText });
           } finally {
             await parser.destroy();
           }
@@ -127,9 +163,21 @@ export class StatementService {
 
     return new Promise<string>((resolve, reject) => {
       const worker = new Worker(workerCode, { eval: true });
-      worker.postMessage({ buffer, password });
+      worker.postMessage({
+        buffer,
+        password,
+        cMapUrl: localCMapUrl,
+        standardFontDataUrl: localStandardFontDataUrl
+      });
 
       worker.on('message', (res) => {
+        if (res.type === 'progress') {
+          if (onProgress) {
+            onProgress(res.progress, res.stage, res.detail);
+          }
+          return;
+        }
+
         worker.terminate();
         if (res.success) {
           resolve(res.text);
@@ -249,12 +297,37 @@ export class StatementService {
 
       if (fileName.toLowerCase().endsWith('.xlsx') || fileName.toLowerCase().endsWith('.xls')) {
         source = '微信';
+        this.progressStore.set(recordId, {
+          progress: 20,
+          stage: 'parsing_xlsx',
+          detail: '正在读取 Excel 账单数据...',
+        });
         parsedData = await this.parseXlsxFile(buffer);
       } else if (fileName.toLowerCase().endsWith('.csv')) {
+        this.progressStore.set(recordId, {
+          progress: 20,
+          stage: 'parsing_csv',
+          detail: '正在读取 CSV 账单数据...',
+        });
         parsedData = await this.parseCsvFile(buffer);
         source = parsedData.summary.source;
       } else {
-        const text = await this.parsePdfText(buffer, password);
+        this.progressStore.set(recordId, {
+          progress: 5,
+          stage: 'parsing_pdf',
+          detail: '正在读取 PDF 结构...',
+        });
+
+        const text = await this.parsePdfText(buffer, password, (progress, stage, detail) => {
+          this.progressStore.set(recordId, { progress, stage, detail });
+        });
+
+        this.progressStore.set(recordId, {
+          progress: 90,
+          stage: 'detecting_source',
+          detail: '正在识别账单来源...',
+        });
+
         const detected = this.detectSourceFromText(text);
 
         if (!detected) {
@@ -262,8 +335,21 @@ export class StatementService {
         }
 
         source = detected;
+
+        this.progressStore.set(recordId, {
+          progress: 92,
+          stage: 'extracting_data',
+          detail: '正在进行智能数据 analysis...',
+        });
+
         parsedData = this.extractData(text, source);
       }
+
+      this.progressStore.set(recordId, {
+        progress: 95,
+        stage: 'saving',
+        detail: '正在安全导入并生成分析报告...',
+      });
 
       if (parsedData.transactions.length === 0) {
         this.logger.warn(
@@ -416,9 +502,11 @@ export class StatementService {
             : { remainingQueries: { increment: 1 }, totalQueries: { decrement: 1 } },  // 普通用户：退还次数
         }),
       ]);
+    } finally {
+      this.progressStore.delete(recordId);
     }
   }
-  async getRecordStatus(recordId: number, userId: number): Promise<{ status: string; ready: boolean }> {
+  async getRecordStatus(recordId: number, userId: number) {
     const record = await this.prisma.queryRecord.findUnique({
       where: { id: recordId },
       select: { userId: true, status: true },
@@ -427,9 +515,44 @@ export class StatementService {
     if (!(await this.isOwnerOrAdmin(record.userId, userId))) {
       throw new ForbiddenException('无权访问该记录');
     }
+
+    let progress = 0;
+    let stage = record.status;
+    let detail = '正在初始化解析任务...';
+
+    if (record.status === 'done') {
+      progress = 100;
+      detail = '解析完成';
+    } else if (record.status === 'failed') {
+      progress = 100;
+      detail = '解析失败';
+    } else if (record.status === 'password_required') {
+      progress = 100;
+      detail = '账单文件受密码保护，请输入解压密码';
+    } else {
+      const activeProgress = this.progressStore.get(recordId);
+      if (activeProgress) {
+        progress = activeProgress.progress;
+        stage = activeProgress.stage;
+        detail = activeProgress.detail;
+      }
+    }
+
+    const tips = [
+      '账单上传后将采用银行级加密存储，仅供您本人查看。',
+      '分析完成后，可生成多维度分类统计图表，方便记账与对账。',
+      '系统支持微信、支付宝、招商、交通、工商及顺德农商银行账单。',
+      '大体积账单解析可能会消耗较多时间，请耐心等待。',
+      '如果解析失败，请检查账单文件是否完整或密码是否正确。'
+    ];
+
     return {
       status: record.status,
       ready: record.status === 'done',
+      progress,
+      stage,
+      detail,
+      tips
     };
   }
 

@@ -52,8 +52,9 @@ PAT 需 `read:packages` 权限。
 
 | 名称 | 说明 |
 |------|------|
-| `DEPLOY_SSH_PASSWORD` | 服务器1 SSH 密码 |
-| `DEPLOY_SSH_PASSWORD_2` | 服务器2 SSH 密码（可选） |
+| `DEPLOY_SSH_KEY` | 服务器1 SSH 密钥 (Private Key) |
+| `DEPLOY_SSH_KEY_2` | 服务器2 SSH 密钥 (Private Key)（可选） |
+
 
 > 两台服务器的 `deploy-server-1` / `deploy-server-2` 两个 job **并行**执行（`needs: build-and-push`），互不阻塞；任意一台失败不影响另一台完成部署。
 

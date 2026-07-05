@@ -7,8 +7,8 @@
 #              DEPLOY_DOCKER_NETWORK_2  同上，服务器2专用
 #
 # Secrets：
-#   服务器1：DEPLOY_SSH_PASSWORD
-#   服务器2：DEPLOY_SSH_PASSWORD_2（可选，留空则跳过）
+#   服务器1：DEPLOY_SSH_KEY
+#   服务器2：DEPLOY_SSH_KEY_2（可选，留空则跳过）
 #
 # 未设置 DEPLOY_HOST 时跳过全部 deploy，仅构建推送镜像。
 # 私有镜像需在服务器 docker login ghcr.io（见 deploy/README.md）。
@@ -86,7 +86,7 @@ jobs:
         with:
           host: ${{ vars.DEPLOY_HOST }}
           username: ${{ vars.DEPLOY_USER }}
-          password: ${{ secrets.DEPLOY_SSH_PASSWORD }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
           envs: IMAGE_FULL_SHA,DEPLOY_PATH,DOCKER_NETWORK
           script_stop: true
           script: |
@@ -111,7 +111,7 @@ jobs:
         with:
           host: ${{ vars.DEPLOY_HOST_2 }}
           username: ${{ vars.DEPLOY_USER_2 }}
-          password: ${{ secrets.DEPLOY_SSH_PASSWORD_2 }}
+          key: ${{ secrets.DEPLOY_SSH_KEY_2 }}
           script_stop: true
           script: |
             set -exo pipefail
