@@ -16,6 +16,10 @@ describe('StatementService', () => {
     service = module.get<StatementService>(StatementService);
   });
 
+  afterEach(() => {
+    service.onModuleDestroy();
+  });
+
   it('should be defined', () => {
     expect(service).toBeDefined();
   });

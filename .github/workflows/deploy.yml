@@ -2,9 +2,7 @@
 #
 # Variables（Settings → Secrets and variables → Actions → Variables）：
 #   服务器1：DEPLOY_HOST, DEPLOY_USER, DEPLOY_PATH
-#              DEPLOY_DOCKER_NETWORK   PostgreSQL 在 Docker 容器时设置（如 uniapp-network），宿主机留空
 #   服务器2：DEPLOY_HOST_2, DEPLOY_USER_2, DEPLOY_PATH_2（可选，留空则跳过）
-#              DEPLOY_DOCKER_NETWORK_2  同上，服务器2专用
 #
 # Secrets：
 #   服务器1：DEPLOY_SSH_KEY
@@ -32,6 +30,8 @@ on:
 
 env:
   CONTEXT_PATH: ${{ vars.DOCKER_CONTEXT || '.' }}
+  DEPLOY_DOCKER_NETWORK: uniapp-network
+  DEPLOY_PATH: /var/www/billAnalysisServer
 
 jobs:
   build-and-push:
@@ -69,59 +69,83 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
 
   # 并行部署到服务器1（始终执行）
-  deploy-server-1:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    if: |
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
-      vars.DEPLOY_HOST != ''
-    steps:
-      - uses: appleboy/ssh-action@v1.2.0
-        env:
-          IMAGE_FULL_SHA: ${{ needs.build-and-push.outputs.image_full_sha }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
-          # PostgreSQL 在 Docker 容器时需要：设置 DEPLOY_DOCKER_NETWORK 为 Docker 网络名（如 uniapp-network）
-          # PostgreSQL 在宿主机时留空
-          DOCKER_NETWORK: ${{ vars.DEPLOY_DOCKER_NETWORK }}
-        with:
-          host: ${{ vars.DEPLOY_HOST }}
-          username: ${{ vars.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          envs: IMAGE_FULL_SHA,DEPLOY_PATH,DOCKER_NETWORK
-          script_stop: true
-          script: |
-            set -exo pipefail
-            cd "${DEPLOY_PATH}"
-            if [ ! -f .env ]; then
-              echo "Error: .env not found in ${DEPLOY_PATH}"
-              exit 1
-            fi
-            export DOCKER_IMAGE="${IMAGE_FULL_SHA}"
-            bash deploy/remote-deploy.sh
+  # deploy-server-1:
+  #   needs: build-and-push
+  #   runs-on: ubuntu-latest
+  #   if: |
+  #     (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
+  #     vars.DEPLOY_HOST != ''
+  #   steps:
+  #     - uses: appleboy/ssh-action@v1.2.0
+  #       env:
+  #         IMAGE_FULL_SHA: ${{ needs.build-and-push.outputs.image_full_sha }}
+  #         DEPLOY_PATH: ${{ env.DEPLOY_PATH }}
+  #         DOCKER_NETWORK: ${{ env.DEPLOY_DOCKER_NETWORK }}
+  #       with:
+  #         host: ${{ vars.DEPLOY_HOST }}
+  #         username: ${{ vars.DEPLOY_USER }}
+  #         key: ${{ secrets.DEPLOY_SSH_KEY }}
+  #         envs: IMAGE_FULL_SHA,DEPLOY_PATH,DOCKER_NETWORK
+  #         script_stop: true
+  #         script: |
+  #           set -exo pipefail
+  #           cd "${DEPLOY_PATH}"
+  #           if [ ! -f .env ]; then
+  #             echo "Error: .env not found in ${DEPLOY_PATH}"
+  #             exit 1
+  #           fi
+  #           export DOCKER_IMAGE="${IMAGE_FULL_SHA}"
+  #           bash deploy/remote-deploy.sh
 
-  # 并行部署到服务器2（需配置 DEPLOY_HOST_2 等变量）
-  deploy-server-2:
+  # # 并行部署到服务器2（需配置 DEPLOY_HOST_2 变量）
+  # deploy-server-2:
+  #   needs: build-and-push
+  #   runs-on: ubuntu-latest
+  #   if: |
+  #     (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
+  #     vars.DEPLOY_HOST_2 != ''
+  #   steps:
+  #     - uses: appleboy/ssh-action@v1.2.0
+  #       with:
+  #         host: ${{ vars.DEPLOY_HOST_2 }}
+  #         username: ${{ vars.DEPLOY_USER }}
+  #         key: ${{ secrets.DEPLOY_SSH_KEY }}
+  #         script_stop: true
+  #         script: |
+  #           set -exo pipefail
+  #           cd "${{ env.DEPLOY_PATH }}"
+  #           if [ ! -f .env ]; then
+  #             echo "Error: .env not found in ${{ env.DEPLOY_PATH }}"
+  #             exit 1
+  #           fi
+  #           # 直接在 script 中 export，避免 envs 机制传递空值的歧义
+  #           export DOCKER_IMAGE="${{ needs.build-and-push.outputs.image_full_sha }}"
+  #           export DOCKER_NETWORK="${{ env.DEPLOY_DOCKER_NETWORK }}"
+  #           echo "[workflow] DOCKER_NETWORK=${DOCKER_NETWORK}" >&2
+  #           bash deploy/remote-deploy.sh
+
+  deploy-server-test:
     needs: build-and-push
     runs-on: ubuntu-latest
     if: |
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
-      vars.DEPLOY_HOST_2 != ''
+      vars.DEPLOY_HOST_TEST != ''
     steps:
       - uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ vars.DEPLOY_HOST_2 }}
+          host: ${{ vars.DEPLOY_HOST_TEST }}
           username: ${{ vars.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script_stop: true
           script: |
             set -exo pipefail
-            cd "${{ vars.DEPLOY_PATH }}"
+            cd "${{ env.DEPLOY_PATH }}"
             if [ ! -f .env ]; then
-              echo "Error: .env not found in ${{ vars.DEPLOY_PATH }}"
+              echo "Error: .env not found in ${{ env.DEPLOY_PATH }}"
               exit 1
             fi
             # 直接在 script 中 export，避免 envs 机制传递空值的歧义
             export DOCKER_IMAGE="${{ needs.build-and-push.outputs.image_full_sha }}"
-            export DOCKER_NETWORK="${{ vars.DEPLOY_DOCKER_NETWORK_2 }}"
+            export DOCKER_NETWORK="${{ env.DEPLOY_DOCKER_NETWORK }}"
             echo "[workflow] DOCKER_NETWORK=${DOCKER_NETWORK}" >&2
             bash deploy/remote-deploy.sh

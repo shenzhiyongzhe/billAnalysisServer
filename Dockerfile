@@ -25,7 +25,7 @@ WORKDIR /usr/src/app
 ENV NODE_ENV=production
 ENV LANG=C.UTF-8
 
-RUN apk add --no-cache openssl
+RUN apk add --no-cache openssl poppler-utils
 
 COPY --from=builder /usr/src/app/node_modules ./node_modules
 COPY --from=builder /usr/src/app/dist ./dist
