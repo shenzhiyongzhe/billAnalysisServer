@@ -85,10 +85,19 @@ export interface StatementResultBundle {
 }
 
 @Injectable()
-export class StatementService {
+export class StatementService implements OnModuleInit, OnModuleDestroy {
   private uploadsDir = path.join(process.cwd(), 'uploads');
   private readonly logger = new Logger(StatementService.name);
   private progressStore = new Map<number, { progress: number; stage: string; detail: string }>();
+
+  // Persistent Worker properties
+  private worker: Worker | null = null;
+  private nextTaskId = 1;
+  private pendingTasks = new Map<number, {
+    resolve: (text: string) => void;
+    reject: (err: any) => void;
+    onProgress?: (progress: number, stage: string, detail: string) => void;
+  }>();
 
   constructor(private prisma: PrismaService) {
     if (!fs.existsSync(this.uploadsDir)) {
@@ -96,63 +105,175 @@ export class StatementService {
     }
   }
 
+  onModuleInit() {
+    this.initializeWorker();
+  }
+
+  onModuleDestroy() {
+    if (this.worker) {
+      this.worker.terminate().catch(() => {});
+    }
+  }
+
+  private initializeWorker() {
+    const localCMapUrl = path.resolve(process.cwd(), 'node_modules/pdfjs-dist/cmaps').replace(/\\/g, '/') + '/';
+    const localStandardFontDataUrl = path.resolve(process.cwd(), 'node_modules/pdfjs-dist/standard_fonts').replace(/\\/g, '/') + '/';
+
+    const workerCode = `
+      const { parentPort } = require('worker_threads');
+      const { PDFParse } = require('pdf-parse');
+
+      if (!parentPort) throw new Error('Must run as worker');
+
+      parentPort.on('message', async (message) => {
+        const { taskId, buffer, password, cMapUrl, standardFontDataUrl } = message;
+        try {
+          const parser = new PDFParse({
+            data: Buffer.from(buffer),
+            password,
+            cMapUrl,
+            cMapPacked: true,
+            standardFontDataUrl,
+            verbosity: 0
+          });
+          try {
+            const doc = await parser.load();
+            const total = doc.numPages;
+            const pages = new Array(total);
+            const getTextOptions = {
+              pageJoiner: '',
+              disableNormalization: true
+            };
+            
+            const concurrencyLimit = 15; // Parallelize page extraction on second CPU core in chunks of 15
+            
+            for (let i = 1; i <= total; i += concurrencyLimit) {
+              const chunkPromises = [];
+              const endPage = Math.min(i + concurrencyLimit - 1, total);
+              
+              for (let s = i; s <= endPage; s++) {
+                const pageNum = s;
+                chunkPromises.push((async () => {
+                  const page = await doc.getPage(pageNum);
+                  const pageText = await parser.getPageText(page, getTextOptions, total);
+                  page.cleanup();
+                  pages[pageNum - 1] = pageText;
+                })());
+              }
+              
+              await Promise.all(chunkPromises);
+              
+              parentPort.postMessage({
+                type: 'progress',
+                taskId,
+                progress: Math.round((endPage / total) * 90),
+                stage: 'parsing_pdf',
+                detail: \`正在解析第 \${endPage}/\${total} 页...\`
+              });
+            }
+            
+            const fullText = pages.join('\\n\\n') + '\\n\\n';
+            parentPort.postMessage({ success: true, taskId, text: fullText });
+          } finally {
+            await parser.destroy();
+          }
+        } catch (error) {
+          parentPort.postMessage({
+            success: false,
+            taskId,
+            error: {
+              name: error.name || 'Error',
+              message: error.message || String(error),
+              stack: error.stack
+            }
+          });
+        }
+      });
+    `;
+
+    this.worker = new Worker(workerCode, { eval: true });
+
+    this.worker.on('message', (res) => {
+      const task = this.pendingTasks.get(res.taskId);
+      if (!task) return;
+
+      if (res.type === 'progress') {
+        if (task.onProgress) {
+          task.onProgress(res.progress, res.stage, res.detail);
+        }
+        return;
+      }
+
+      this.pendingTasks.delete(res.taskId);
+      if (res.success) {
+        task.resolve(res.text);
+      } else {
+        const errObj = res.error;
+        if (errObj.name === 'PasswordException') {
+          task.reject(new PasswordException(errObj.message));
+        } else {
+          const err = new Error(errObj.message);
+          err.name = errObj.name;
+          err.stack = errObj.stack;
+          task.reject(err);
+        }
+      }
+    });
+
+    this.worker.on('error', (err) => {
+      this.logger.error('Worker thread error, recreating...', err);
+      this.recreateWorker();
+    });
+
+    this.worker.on('exit', (code) => {
+      if (code !== 0) {
+        this.logger.error(`Worker thread exited with code ${code}, recreating...`);
+        this.recreateWorker();
+      }
+    });
+  }
+
+  private recreateWorker() {
+    if (this.worker) {
+      try {
+        this.worker.terminate().catch(() => {});
+      } catch (e) {}
+      this.worker = null;
+    }
+
+    // Fail all pending tasks
+    const failedTasks = Array.from(this.pendingTasks.values());
+    this.pendingTasks.clear();
+    for (const task of failedTasks) {
+      task.reject(new Error('Worker thread crashed or exited during execution'));
+    }
+
+    this.initializeWorker();
+  }
+
   private async parsePdfText(
     buffer: Buffer,
     password?: string,
     onProgress?: (progress: number, stage: string, detail: string) => void,
   ): Promise<string> {
+    if (!this.worker) {
+      this.initializeWorker();
+    }
+
     const localCMapUrl = path.resolve(process.cwd(), 'node_modules/pdfjs-dist/cmaps').replace(/\\/g, '/') + '/';
     const localStandardFontDataUrl = path.resolve(process.cwd(), 'node_modules/pdfjs-dist/standard_fonts').replace(/\\/g, '/') + '/';
 
-    const parser = new PDFParse({
-      data: buffer,
-      password,
-      cMapUrl: localCMapUrl,
-      cMapPacked: true,
-      standardFontDataUrl: localStandardFontDataUrl,
-      verbosity: 0
-    }) as any;
-
-    try {
-      const doc = await parser.load();
-      const total = doc.numPages;
-      const pages: string[] = new Array(total);
-      const getTextOptions = {
-        pageJoiner: '',
-        disableNormalization: true
-      };
-
-      const concurrencyLimit = 15; // Parallelize page extraction on main thread in chunks of 15
-
-      for (let i = 1; i <= total; i += concurrencyLimit) {
-        const chunkPromises: Promise<void>[] = [];
-        const endPage = Math.min(i + concurrencyLimit - 1, total);
-
-        for (let s = i; s <= endPage; s++) {
-          const pageNum = s;
-          chunkPromises.push((async () => {
-            const page = await doc.getPage(pageNum);
-            const pageText = await parser.getPageText(page, getTextOptions, total);
-            page.cleanup();
-            pages[pageNum - 1] = pageText;
-          })());
-        }
-
-        await Promise.all(chunkPromises);
-
-        if (onProgress) {
-          onProgress(
-            Math.round((endPage / total) * 90),
-            'parsing_pdf',
-            `正在解析第 ${endPage}/${total} 页...`
-          );
-        }
-      }
-
-      return pages.join('\n\n') + '\n\n';
-    } finally {
-      await parser.destroy();
-    }
+    const taskId = this.nextTaskId++;
+    return new Promise<string>((resolve, reject) => {
+      this.pendingTasks.set(taskId, { resolve, reject, onProgress });
+      this.worker!.postMessage({
+        taskId,
+        buffer,
+        password,
+        cMapUrl: localCMapUrl,
+        standardFontDataUrl: localStandardFontDataUrl
+      });
+    });
   }
 
   async processAndSaveFile(userId: number, buffer: Buffer, originalname: string): Promise<number> {
