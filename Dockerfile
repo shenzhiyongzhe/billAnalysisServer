@@ -23,8 +23,9 @@ FROM node:20-alpine AS runner
 WORKDIR /usr/src/app
 
 ENV NODE_ENV=production
+ENV LANG=C.UTF-8
 
-RUN apk add --no-cache openssl poppler-utils
+RUN apk add --no-cache openssl poppler-utils poppler-data font-noto-cjk
 
 COPY --from=builder /usr/src/app/node_modules ./node_modules
 COPY --from=builder /usr/src/app/dist ./dist
