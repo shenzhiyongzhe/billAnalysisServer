@@ -136,6 +136,27 @@ async function main() {
   const parsePdfTime = parsePdfEnd - parsePdfStart;
   console.log(`  -> Completed: Extracted ${text.length} characters of text in ${parsePdfTime.toFixed(2)}ms`);
 
+  // [DEBUG] Print text sample and date line structures
+  console.log('\n[DEBUG] Extracted Text Structure Info:');
+  console.log('--- Sample Text (First 1000 Chars) ---');
+  console.log(text.slice(0, 1000));
+  console.log('--------------------------------------');
+
+  const debugLines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  console.log(`Total lines split by \\n: ${debugLines.length}`);
+  const dateLines = [];
+  for (let i = 0; i < debugLines.length; i++) {
+    if (debugLines[i].includes('2025-') || debugLines[i].includes('2026-')) {
+      dateLines.push({ index: i, content: debugLines[i], next: debugLines[i+1] || '' });
+    }
+  }
+  console.log(`Date pattern matches found: ${dateLines.length}`);
+  console.log('--- Sample Date Matches (First 10) ---');
+  dateLines.slice(0, 10).forEach(dl => {
+    console.log(`Line [${dl.index}]: "${dl.content}" | Next line: "${dl.next}"`);
+  });
+  console.log('--------------------------------------');
+
   // Step 3: Source Detection
   console.log('\n[Step 3/4] Running source identification (bank/channel recognition)...');
   const detectStart = performance.now();

@@ -1,9 +1,8 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PDFParse, PasswordException } from 'pdf-parse';
 import { Worker } from 'worker_threads';
-import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -102,128 +101,58 @@ export class StatementService {
     password?: string,
     onProgress?: (progress: number, stage: string, detail: string) => void,
   ): Promise<string> {
-    // Try using C++ native pdftotext binary if available (super fast, ~100ms)
-    try {
-      const passwordOpt = password ? `-opw "${password}"` : '';
-      const stdout = execSync(`pdftotext ${passwordOpt} - -`, {
-        input: buffer,
-        encoding: 'utf8',
-        maxBuffer: 15 * 1024 * 1024, // 15MB limit
-        stdio: ['pipe', 'pipe', 'ignore'], // ignore stderr to prevent leaking password errors
-      });
-      this.logger.log('PDF text extracted using native pdftotext successfully.');
-      return stdout;
-    } catch (e: any) {
-      if (e.status === 3) {
-        throw new PasswordException('PDF is password protected.');
-      }
-      this.logger.log(`Native pdftotext not available or failed. Falling back to pure JS parser...`);
-    }
-
     const localCMapUrl = path.resolve(process.cwd(), 'node_modules/pdfjs-dist/cmaps').replace(/\\/g, '/') + '/';
     const localStandardFontDataUrl = path.resolve(process.cwd(), 'node_modules/pdfjs-dist/standard_fonts').replace(/\\/g, '/') + '/';
 
-    const workerCode = `
-      const { parentPort } = require('worker_threads');
-      const { PDFParse } = require('pdf-parse');
+    const parser = new PDFParse({
+      data: buffer,
+      password,
+      cMapUrl: localCMapUrl,
+      cMapPacked: true,
+      standardFontDataUrl: localStandardFontDataUrl,
+      verbosity: 0
+    }) as any;
 
-      if (!parentPort) throw new Error('Must run as worker');
+    try {
+      const doc = await parser.load();
+      const total = doc.numPages;
+      const pages: string[] = new Array(total);
+      const getTextOptions = {
+        pageJoiner: '',
+        disableNormalization: true
+      };
 
-      parentPort.on('message', async (message) => {
-        try {
-          const { buffer, password, cMapUrl, standardFontDataUrl } = message;
-          const parser = new PDFParse({
-            data: Buffer.from(buffer),
-            password,
-            cMapUrl,
-            cMapPacked: true,
-            standardFontDataUrl,
-            verbosity: 0
-          });
-          try {
-            const doc = await parser.load();
-            const total = doc.numPages;
-            const pages = [];
-            const getTextOptions = {
-              pageJoiner: '',
-              disableNormalization: true
-            };
-            
-            for (let s = 1; s <= total; s++) {
-              parentPort.postMessage({
-                type: 'progress',
-                progress: Math.round(((s - 1) / total) * 90),
-                stage: 'parsing_pdf',
-                detail: \`正在解析第 \${s}/\${total} 页...\`
-              });
-              const page = await doc.getPage(s);
-              const pageText = await parser.getPageText(page, getTextOptions, total);
-              pages.push(pageText);
-              page.cleanup();
-            }
-            
-            const fullText = pages.join('\\n\\n') + '\\n\\n';
-            parentPort.postMessage({ success: true, text: fullText });
-          } finally {
-            await parser.destroy();
-          }
-        } catch (error) {
-          parentPort.postMessage({
-            success: false,
-            error: {
-              name: error.name || 'Error',
-              message: error.message || String(error),
-              stack: error.stack
-            }
-          });
-        }
-      });
-    `;
+      const concurrencyLimit = 15; // Parallelize page extraction on main thread in chunks of 15
 
-    return new Promise<string>((resolve, reject) => {
-      const worker = new Worker(workerCode, { eval: true });
-      worker.postMessage({
-        buffer,
-        password,
-        cMapUrl: localCMapUrl,
-        standardFontDataUrl: localStandardFontDataUrl
-      });
+      for (let i = 1; i <= total; i += concurrencyLimit) {
+        const chunkPromises: Promise<void>[] = [];
+        const endPage = Math.min(i + concurrencyLimit - 1, total);
 
-      worker.on('message', (res) => {
-        if (res.type === 'progress') {
-          if (onProgress) {
-            onProgress(res.progress, res.stage, res.detail);
-          }
-          return;
+        for (let s = i; s <= endPage; s++) {
+          const pageNum = s;
+          chunkPromises.push((async () => {
+            const page = await doc.getPage(pageNum);
+            const pageText = await parser.getPageText(page, getTextOptions, total);
+            page.cleanup();
+            pages[pageNum - 1] = pageText;
+          })());
         }
 
-        worker.terminate();
-        if (res.success) {
-          resolve(res.text);
-        } else {
-          const errObj = res.error;
-          if (errObj.name === 'PasswordException') {
-            reject(new PasswordException(errObj.message));
-          } else {
-            const err = new Error(errObj.message);
-            err.name = errObj.name;
-            err.stack = errObj.stack;
-            reject(err);
-          }
-        }
-      });
+        await Promise.all(chunkPromises);
 
-      worker.on('error', (err) => {
-        worker.terminate();
-        reject(err);
-      });
-
-      worker.on('exit', (code) => {
-        if (code !== 0) {
-          reject(new Error("Worker stopped with exit code " + code));
+        if (onProgress) {
+          onProgress(
+            Math.round((endPage / total) * 90),
+            'parsing_pdf',
+            `正在解析第 ${endPage}/${total} 页...`
+          );
         }
-      });
-    });
+      }
+
+      return pages.join('\n\n') + '\n\n';
+    } finally {
+      await parser.destroy();
+    }
   }
 
   async processAndSaveFile(userId: number, buffer: Buffer, originalname: string): Promise<number> {
