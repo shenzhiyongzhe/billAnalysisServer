@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PDFParse, PasswordException } from 'pdf-parse';
 import { Worker } from 'worker_threads';
+import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -101,6 +102,24 @@ export class StatementService {
     password?: string,
     onProgress?: (progress: number, stage: string, detail: string) => void,
   ): Promise<string> {
+    // Try using C++ native pdftotext binary if available (super fast, ~100ms)
+    try {
+      const passwordOpt = password ? `-opw "${password}"` : '';
+      const stdout = execSync(`pdftotext ${passwordOpt} - -`, {
+        input: buffer,
+        encoding: 'utf8',
+        maxBuffer: 15 * 1024 * 1024, // 15MB limit
+        stdio: ['pipe', 'pipe', 'ignore'], // ignore stderr to prevent leaking password errors
+      });
+      this.logger.log('PDF text extracted using native pdftotext successfully.');
+      return stdout;
+    } catch (e: any) {
+      if (e.status === 3) {
+        throw new PasswordException('PDF is password protected.');
+      }
+      this.logger.log(`Native pdftotext not available or failed. Falling back to pure JS parser...`);
+    }
+
     const localCMapUrl = path.resolve(process.cwd(), 'node_modules/pdfjs-dist/cmaps').replace(/\\/g, '/') + '/';
     const localStandardFontDataUrl = path.resolve(process.cwd(), 'node_modules/pdfjs-dist/standard_fonts').replace(/\\/g, '/') + '/';
 
