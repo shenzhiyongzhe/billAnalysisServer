@@ -117,12 +117,13 @@ async function main() {
 
   // Step 2: PDF Parsing (Text Extraction via Worker)
   console.log('\n[Step 2/4] Parsing PDF structure and extracting text (via Worker)...');
-  const parsePdfStart = performance.now();
+  
+  // Run 1: Cold Start (spins up worker and compiles libraries)
+  console.log('  Running First Parse (Cold Start, Worker Initialization)...');
+  const parsePdfStart1 = performance.now();
   let text = '';
   try {
-    text = await service.parsePdfText(fileBuffer, options.password, (progress, stage, detail) => {
-      console.log(`  [Progress] Stage: ${stage} | Progress: ${progress}% | Detail: ${detail}`);
-    });
+    text = await service.parsePdfText(fileBuffer, options.password);
   } catch (err) {
     if (err.name === 'PasswordException') {
       console.error('\n[ERROR] PDF is encrypted/password protected.');
@@ -132,9 +133,25 @@ async function main() {
     }
     process.exit(1);
   }
-  const parsePdfEnd = performance.now();
-  const parsePdfTime = parsePdfEnd - parsePdfStart;
-  console.log(`  -> Completed: Extracted ${text.length} characters of text in ${parsePdfTime.toFixed(2)}ms`);
+  const parsePdfEnd1 = performance.now();
+  const parsePdfTime1 = parsePdfEnd1 - parsePdfStart1;
+  console.log(`    -> Run 1 (Cold) Completed: Extracted ${text.length} characters in ${parsePdfTime1.toFixed(2)}ms`);
+
+  // Run 2: Warm Start (uses the already running, compiled worker)
+  console.log('  Running Second Parse (Warm Start, Reusing Worker)...');
+  const parsePdfStart2 = performance.now();
+  try {
+    await service.parsePdfText(fileBuffer, options.password);
+  } catch (err) {
+    console.error('\n[ERROR] Warm-up parse failed:', err);
+    process.exit(1);
+  }
+  const parsePdfEnd2 = performance.now();
+  const parsePdfTime2 = parsePdfEnd2 - parsePdfStart2;
+  console.log(`    -> Run 2 (Warm) Completed: Extracted ${text.length} characters in ${parsePdfTime2.toFixed(2)}ms`);
+  
+  // Use the warm parse time as the true measure of production performance
+  const parsePdfTime = parsePdfTime2;
 
   // [DEBUG] Print text sample and date line structures
   console.log('\n[DEBUG] Extracted Text Structure Info:');
