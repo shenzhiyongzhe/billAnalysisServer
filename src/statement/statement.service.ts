@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as ExcelJS from 'exceljs';
-import { PdfTextExtractor, PdfExtractEngine } from './pdf-text-extractor';
+import { PdfTextExtractor } from './pdf-text-extractor';
 
 const DEFAULT_QUERY_SERVER_BASE = 'https://www.xinde8888.com/api/query_info';
 
@@ -109,18 +109,16 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     buffer: Buffer,
     password?: string,
     onProgress?: (progress: number, stage: string, detail: string) => void,
-    engine: PdfExtractEngine = 'auto',
   ): Promise<string> {
-    return this.pdfExtractor.extract(buffer, password, onProgress, engine);
+    return this.pdfExtractor.extract(buffer, password, onProgress);
   }
 
   async extractPdfTextForBenchmark(
     buffer: Buffer,
     password: string | undefined,
-    engine: PdfExtractEngine,
     onProgress?: (progress: number, stage: string, detail: string) => void,
   ): Promise<string> {
-    return this.pdfExtractor.extract(buffer, password, onProgress, engine);
+    return this.pdfExtractor.extract(buffer, password, onProgress);
   }
 
   async processAndSaveFile(userId: number, buffer: Buffer, originalname: string): Promise<number> {

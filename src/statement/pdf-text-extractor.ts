@@ -1,12 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { PasswordException } from 'pdf-parse';
-import { spawn } from 'child_process';
 import { Worker } from 'worker_threads';
-import * as fsp from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
-
-export type PdfExtractEngine = 'auto' | 'poppler' | 'pdf-parse';
 
 export type PdfExtractProgress = (
   progress: number,
@@ -14,8 +9,6 @@ export type PdfExtractProgress = (
   detail: string,
 ) => void;
 
-const MIN_TEXT_LENGTH = 100;
-const POPPLER_TIMEOUT_MS = 30_000;
 const LARGE_FILE_BYTES = 2 * 1024 * 1024;
 
 export class PdfTextExtractor {
@@ -49,91 +42,8 @@ export class PdfTextExtractor {
     buffer: Buffer,
     password?: string,
     onProgress?: PdfExtractProgress,
-    engine: PdfExtractEngine = 'auto',
   ): Promise<string> {
-    if (engine === 'pdf-parse') {
-      return this.extractWithPdfParse(buffer, password, onProgress);
-    }
-
-    if (engine === 'poppler') {
-      const popplerResult = await this.extractWithPoppler(buffer, password, onProgress);
-      if (popplerResult) {
-        this.logger.log(
-          `PDF text extracted via poppler in ${popplerResult.durationMs.toFixed(0)}ms (${popplerResult.text.length} chars)`,
-        );
-        return popplerResult.text;
-      }
-      throw new Error('Poppler extraction failed');
-    }
-
-    onProgress?.(5, 'parsing_pdf', '正在读取 PDF 结构...');
-
-    const popplerResult = await this.extractWithPoppler(buffer, password, onProgress);
-    if (popplerResult) {
-      onProgress?.(85, 'parsing_pdf', 'PDF 文本提取完成');
-      this.logger.log(
-        `PDF text extracted via poppler in ${popplerResult.durationMs.toFixed(0)}ms (${popplerResult.text.length} chars)`,
-      );
-      return popplerResult.text;
-    }
-
-    this.logger.warn('Poppler extraction unavailable or insufficient, falling back to pdf-parse');
     return this.extractWithPdfParse(buffer, password, onProgress);
-  }
-
-  async extractWithPoppler(
-    buffer: Buffer,
-    password?: string,
-    onProgress?: PdfExtractProgress,
-  ): Promise<{ text: string; durationMs: number } | null> {
-    const start = performance.now();
-    let tmpDir: string | null = null;
-
-    try {
-      onProgress?.(10, 'parsing_pdf', '正在使用 Poppler 提取文本...');
-      tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pdf-extract-'));
-      const pdfPath = path.join(tmpDir, 'input.pdf');
-      await fsp.writeFile(pdfPath, buffer);
-
-      const args = ['-layout', '-enc', 'UTF-8'];
-      if (password) {
-        args.push('-upw', password);
-      }
-      args.push(pdfPath, '-');
-
-      const { stdout, stderr, exitCode } = await this.runPdftotext(args);
-      const durationMs = performance.now() - start;
-
-      if (exitCode !== 0) {
-        this.logger.warn(
-          `pdftotext exited with code ${exitCode}: ${stderr.trim().slice(0, 200)}`,
-        );
-        return null;
-      }
-
-      const text = stdout;
-      if (text.trim().length < MIN_TEXT_LENGTH) {
-        this.logger.warn(
-          `pdftotext output too short (${text.trim().length} chars), will fallback`,
-        );
-        return null;
-      }
-
-      const normalized = text.endsWith('\n\n') ? text : `${text}\n\n`;
-      return { text: normalized, durationMs };
-    } catch (err: unknown) {
-      const code = (err as NodeJS.ErrnoException)?.code;
-      if (code === 'ENOENT') {
-        this.logger.warn('pdftotext not found on PATH, will fallback to pdf-parse');
-      } else {
-        this.logger.warn('Poppler extraction error, will fallback to pdf-parse', err);
-      }
-      return null;
-    } finally {
-      if (tmpDir) {
-        await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-      }
-    }
   }
 
   async extractWithPdfParse(
@@ -171,53 +81,6 @@ export class PdfTextExtractor {
       `PDF text extracted via pdf-parse in ${durationMs.toFixed(0)}ms (${text.length} chars)`,
     );
     return text;
-  }
-
-  private runPdftotext(
-    args: string[],
-  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    return new Promise((resolve, reject) => {
-      const child = spawn('pdftotext', args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-
-      let stdout = '';
-      let stderr = '';
-      let settled = false;
-
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        child.kill('SIGKILL');
-        reject(new Error(`pdftotext timed out after ${POPPLER_TIMEOUT_MS}ms`));
-      }, POPPLER_TIMEOUT_MS);
-
-      child.stdout.on('data', (chunk: Buffer) => {
-        stdout += chunk.toString('utf8');
-      });
-
-      child.stderr.on('data', (chunk: Buffer) => {
-        stderr += chunk.toString('utf8');
-      });
-
-      child.on('error', (err) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        reject(err);
-      });
-
-      child.on('close', (code) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve({
-          stdout,
-          stderr,
-          exitCode: code ?? 1,
-        });
-      });
-    });
   }
 
   private initializeWorker() {
