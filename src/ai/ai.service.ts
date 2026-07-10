@@ -18,15 +18,6 @@ interface MonthlyDetail {
   recordCount: number;
 }
 
-interface LoanSequence {
-  counterparty: string;
-  amount: number;
-  count: number;
-  firstDate: string;
-  lastDate: string;
-  spanDays: number;
-  totalAmount: number;
-}
 
 interface GamblingCounterparty {
   counterparty: string;
@@ -40,6 +31,30 @@ interface TopCounterparty {
   totalAmount: number;
   count: number;
   type: string;
+}
+
+interface SuspectedInDbSummary {
+  counterparty: string;
+  amount: number;
+  count: number;
+  totalAmount: number;
+  firstDate: string;
+  lastDate: string;
+}
+
+interface SuspectedWithdrawDetail {
+  date: string;
+  amount: number;
+  counterparty: string;
+}
+
+interface SuspectedInDbAndWithdraw {
+  totalInDbCount: number;
+  totalInDbAmount: number;
+  totalWithdrawCount: number;
+  totalWithdrawAmount: number;
+  inDbSummaries: SuspectedInDbSummary[];
+  withdrawDetails: SuspectedWithdrawDetail[];
 }
 
 interface RiskFeatures {
@@ -63,10 +78,6 @@ interface RiskFeatures {
     avgMonthlyExpenditure: number;
     monthlyDetails: MonthlyDetail[];
   };
-  loanSignals: {
-    suspectedSequences: LoanSequence[];
-    totalLoanAmount: number;
-  };
   gamblingSignals: {
     lateNightTransactionCount: number;
     lateNightTransactionPct: string;
@@ -81,6 +92,7 @@ interface RiskFeatures {
   userInput: {
     userNotes: string;
   };
+  suspectedInDbAndWithdraw: SuspectedInDbAndWithdraw;
 }
 
 @Injectable()
@@ -193,44 +205,6 @@ export class AiService {
       monthlyDetails,
     };
 
-    // --- Loan detection: fixed amount sequences ≥100, count ≥5, span ≤60 days ---
-    const expenditures = transactions.filter((t) => t.type === '支出' && t.amount >= 100);
-
-    type LoanGroup = { counterparty: string; amount: number; dates: Date[] };
-    const loanGroupMap = new Map<string, LoanGroup>();
-    for (const t of expenditures) {
-      const key = `${t.counterparty}||${t.amount.toFixed(2)}`;
-      if (!loanGroupMap.has(key)) {
-        loanGroupMap.set(key, { counterparty: t.counterparty, amount: t.amount, dates: [] });
-      }
-      const dateObj = new Date(t.date.replace(/-/g, '/'));
-      if (!isNaN(dateObj.getTime())) {
-        loanGroupMap.get(key)!.dates.push(dateObj);
-      }
-    }
-
-    const loanSequences: LoanSequence[] = [];
-    for (const [, g] of loanGroupMap) {
-      if (g.dates.length < 5) continue;
-      g.dates.sort((a, b) => a.getTime() - b.getTime());
-      const first = g.dates[0];
-      const last = g.dates[g.dates.length - 1];
-      const spanDays = Math.round((last.getTime() - first.getTime()) / (1000 * 60 * 60 * 24));
-      if (spanDays <= 60) {
-        loanSequences.push({
-          counterparty: g.counterparty,
-          amount: g.amount,
-          count: g.dates.length,
-          firstDate: first.toISOString().substring(0, 10),
-          lastDate: last.toISOString().substring(0, 10),
-          spanDays,
-          totalAmount: Math.round(g.amount * g.dates.length * 100) / 100,
-        });
-      }
-    }
-
-    const totalLoanAmount = loanSequences.reduce((s, l) => s + l.totalAmount, 0);
-
     // --- Gambling signals ---
     const GAMBLING_KEYWORDS = ['xyliu', '破茧成蝶', '邂逅', '上下分', '彩票', '体彩', '福彩', '快三', '时时彩'];
     let redPacketOutCount = 0;
@@ -317,25 +291,158 @@ export class AiService {
       .sort((a, b) => b.totalAmount - a.totalAmount)
       .slice(0, 20);
 
+    // --- Suspected In DB & Withdraw detection ---
+    const SUSPECTED_MIN_AMOUNT = 30;
+    const SUSPECTED_MIN_CONSECUTIVE_DAYS = 4;
+    const SUSPECTED_WITHDRAW_WINDOW_DAYS = 7;
+    const GROUP_KEY_SEP = '\0';
+
+    const extractDateKey = (dateStr: string) => {
+      if (!dateStr) return '';
+      const normalized = dateStr.replace('T', ' ').trim();
+      const match = normalized.match(/(\d{4}-\d{2}-\d{2})/);
+      return match ? match[1] : '';
+    };
+
+    const parseDateKeyToUtc = (dateKey: string) => {
+      const [y, m, d] = dateKey.split('-').map(Number);
+      return Date.UTC(y, m - 1, d);
+    };
+
+    const getMaxConsecutiveDays = (dateKeys: string[]) => {
+      const unique = [...new Set(dateKeys.filter(Boolean))].sort();
+      if (unique.length === 0) return 0;
+      let maxStreak = 1;
+      let streak = 1;
+      for (let i = 1; i < unique.length; i++) {
+        const diffDays =
+          (parseDateKeyToUtc(unique[i]) - parseDateKeyToUtc(unique[i - 1])) /
+          (1000 * 60 * 60 * 24);
+        if (diffDays === 1) {
+          streak++;
+          maxStreak = Math.max(maxStreak, streak);
+        } else if (diffDays > 1) {
+          streak = 1;
+        }
+      }
+      return maxStreak;
+    };
+
+    const getRecentWindowStartKey = () => {
+      const today = new Date();
+      const start = new Date(
+        Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()),
+      );
+      start.setUTCDate(start.getUTCDate() - (SUSPECTED_WITHDRAW_WINDOW_DAYS - 1));
+      const y = start.getUTCFullYear();
+      const m = String(start.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(start.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    };
+
+    const getSuspectedPatternKey = (t: { counterparty: string; amount: number }) =>
+      `${t.counterparty}${GROUP_KEY_SEP}${t.amount.toFixed(2)}`;
+
+    // Group dates by patternKey
+    const patternDates = new Map<string, string[]>();
+    for (const t of transactions) {
+      if (t.type !== '支出') continue;
+      if (t.amount < SUSPECTED_MIN_AMOUNT) continue;
+      const patternKey = getSuspectedPatternKey(t);
+      const dateKey = extractDateKey(t.date);
+      if (!dateKey) continue;
+      if (!patternDates.has(patternKey)) {
+        patternDates.set(patternKey, []);
+      }
+      patternDates.get(patternKey)!.push(dateKey);
+    }
+
+    // Identify matched patternKeys
+    const suspectedPatternKeys = new Set<string>();
+    for (const [patternKey, dates] of patternDates.entries()) {
+      if (getMaxConsecutiveDays(dates) >= SUSPECTED_MIN_CONSECUTIVE_DAYS) {
+        suspectedPatternKeys.add(patternKey);
+      }
+    }
+
+    // Filter transaction items matching suspected patternKeys
+    const inDbTransactions = transactions.filter((t) => {
+      if (t.type !== '支出') return false;
+      const patternKey = getSuspectedPatternKey(t);
+      return suspectedPatternKeys.has(patternKey);
+    });
+
+    // Group In DB transactions by pattern to build summaries
+    const inDbGroups = new Map<string, { counterparty: string; amount: number; dates: string[] }>();
+    for (const t of inDbTransactions) {
+      const patternKey = getSuspectedPatternKey(t);
+      if (!inDbGroups.has(patternKey)) {
+        inDbGroups.set(patternKey, { counterparty: t.counterparty, amount: t.amount, dates: [] });
+      }
+      const dateKey = extractDateKey(t.date);
+      if (dateKey) {
+        inDbGroups.get(patternKey)!.dates.push(dateKey);
+      }
+    }
+
+    const inDbSummaries: SuspectedInDbSummary[] = [];
+    for (const [, g] of inDbGroups.entries()) {
+      g.dates.sort();
+      inDbSummaries.push({
+        counterparty: g.counterparty,
+        amount: g.amount,
+        count: g.dates.length,
+        totalAmount: Math.round(g.amount * g.dates.length * 100) / 100,
+        firstDate: g.dates[0] || '',
+        lastDate: g.dates[g.dates.length - 1] || '',
+      });
+    }
+    inDbSummaries.sort((a, b) => b.totalAmount - a.totalAmount);
+
+    const totalInDbCount = inDbTransactions.length;
+    const totalInDbAmount = Math.round(inDbTransactions.reduce((s, t) => s + t.amount, 0) * 100) / 100;
+
+    // Filter suspected withdraw transactions
+    const recentWindowStart = getRecentWindowStartKey();
+    const withdrawTransactions = inDbTransactions.filter((t) => {
+      const dateKey = extractDateKey(t.date);
+      return dateKey && dateKey >= recentWindowStart;
+    });
+
+    const withdrawDetails: SuspectedWithdrawDetail[] = withdrawTransactions.map((t) => ({
+      date: t.date,
+      amount: t.amount,
+      counterparty: t.counterparty,
+    })).sort((a, b) => b.date.localeCompare(a.date));
+
+    const totalWithdrawCount = withdrawTransactions.length;
+    const totalWithdrawAmount = Math.round(withdrawTransactions.reduce((s, t) => s + t.amount, 0) * 100) / 100;
+
+    const suspectedInDbAndWithdraw: SuspectedInDbAndWithdraw = {
+      totalInDbCount,
+      totalInDbAmount,
+      totalWithdrawCount,
+      totalWithdrawAmount,
+      inDbSummaries,
+      withdrawDetails,
+    };
+
     return {
       basicInfo,
       billOverview,
-      loanSignals: {
-        suspectedSequences: loanSequences,
-        totalLoanAmount: Math.round(totalLoanAmount * 100) / 100,
-      },
       gamblingSignals,
       topCounterparties: { byAmount },
       userInput,
+      suspectedInDbAndWithdraw,
     };
   }
 
   private buildUserPrompt(features: RiskFeatures): string {
     const bi = features.basicInfo;
     const bo = features.billOverview;
-    const ls = features.loanSignals;
     const gs = features.gamblingSignals;
     const ui = features.userInput;
+    const ws = features.suspectedInDbAndWithdraw;
 
     const monthlyText = bo.monthlyDetails
       .map(
@@ -343,17 +450,6 @@ export class AiService {
           `  ${m.month}: 收入¥${m.income} 支出¥${m.expenditure} 结余¥${m.balance} (${m.recordCount}笔)`,
       )
       .join('\n');
-
-    const loanText =
-      ls.suspectedSequences.length > 0
-        ? ls.suspectedSequences
-          .map(
-            (s) =>
-              `  - 对手方「${s.counterparty}」，固定金额¥${s.amount}，共${s.count}笔，` +
-              `时间跨度${s.spanDays}天(${s.firstDate}~${s.lastDate})，合计¥${s.totalAmount}`,
-          )
-          .join('\n') + `\n  合计疑似天退金额：¥${ls.totalLoanAmount}`
-        : '  未发现明显固定金额天退序列（不代表无借贷，请结合交易对手方综合判断）';
 
     const gamblingText = [
       `  凌晨(22-6点)交易：${gs.lateNightTransactionCount}笔，占比${gs.lateNightTransactionPct}`,
@@ -371,6 +467,23 @@ export class AiService {
       .slice(0, 10)
       .map((c) => `  - 【${c.type}】${c.counterparty}  ¥${c.totalAmount}（${c.count}笔）`)
       .join('\n');
+
+    const withdrawText =
+      ws.withdrawDetails.length > 0
+        ? ws.withdrawDetails
+          .map((d) => `  - ${d.date}: ${d.counterparty} 支出¥${d.amount}`)
+          .join('\n')
+        : '  近7天内未发现明显疑似在退交易';
+
+    const inDbText =
+      ws.inDbSummaries.length > 0
+        ? ws.inDbSummaries
+          .map(
+            (s) =>
+              `  - 对手方「${s.counterparty}」，固定金额¥${s.amount}，共${s.count}笔，累计¥${s.totalAmount} (${s.firstDate} ~ ${s.lastDate})`,
+          )
+          .join('\n')
+        : '  未发现明显疑似在库固定金额序列';
 
     return `请根据以下结构化账单特征数据，以专业风控视角生成分析报告。
 
@@ -395,8 +508,12 @@ export class AiService {
 月度明细：
 ${monthlyText}
 
-==== 疑似借贷天退 ====
-${loanText}
+==== 疑似在库与疑似在退 ====
+疑似在库交易（连续4天及以上固定金额支出，金额>=30）：
+${inDbText}
+
+疑似在退交易（属于疑似在库且时间在近7天内）：
+${withdrawText}
 
 ==== 赌博风险信号 ====
 ${gamblingText}
@@ -404,8 +521,8 @@ ${gamblingText}
 ==== 高频交易对手方（Top 10）====
 ${topCpText}
 
-==== 用户口述信息 ====
-${ui.userNotes ? ui.userNotes : '未提供口述信息'}
+==== 补充信息 ====
+${ui.userNotes ? ui.userNotes : '未提供补充信息'}
 
 请严格按系统提示中的 Markdown 格式输出风控分析报告。`;
   }
@@ -456,7 +573,7 @@ ${ui.userNotes ? ui.userNotes : '未提供口述信息'}
 
     this.logger.log(`Calling AI API for record ${recordId}, model=${model}, transactions=${transactions.length}`);
 
-    const systemPrompt = await this.systemConfigService.getAiSystemPrompt();
+    const systemPrompt = await this.systemConfigService.getUserOrSystemAiPrompt(userId);
 
     const response = await fetch(`${apiBase}/chat/completions`, {
       method: 'POST',

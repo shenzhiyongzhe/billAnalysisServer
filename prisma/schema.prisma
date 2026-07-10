@@ -26,6 +26,7 @@ model WechatUser {
   adminOperationLogs QueryOperationRecord[] @relation("AdminUserRelation")
   customCategories   UserCustomCategory[]
   aiReports          AiAnalysisReport[]
+  promptTemplate     UserPromptTemplate?
 }
 
 model ShareRecord {
@@ -136,4 +137,12 @@ model AiAnalysisReport {
   createdAt     DateTime    @default(now())
 
   @@index([queryRecordId, createdAt(sort: Desc)])
+}
+
+model UserPromptTemplate {
+  userId    Int        @id
+  user      WechatUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  prompt    String     @db.Text
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
 }

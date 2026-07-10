@@ -2,6 +2,7 @@ import { Controller, Get, Put, Post, Body, UseGuards, ParseIntPipe } from '@nest
 import { SystemConfigService } from './system-config.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AdminGuard } from '../admin/admin.guard';
+import { CurrentUserId } from '../auth/current-user.decorator';
 
 @Controller('system-config')
 export class SystemConfigController {
@@ -43,5 +44,26 @@ export class SystemConfigController {
   @UseGuards(JwtAuthGuard, AdminGuard)
   async resetAdminAiSystemPrompt() {
     return this.systemConfigService.resetAiSystemPrompt();
+  }
+
+  @Get('ai-prompt')
+  @UseGuards(JwtAuthGuard)
+  async getUserAiPromptDetail(@CurrentUserId() userId: number) {
+    return this.systemConfigService.getUserAiPromptDetail(userId);
+  }
+
+  @Put('ai-prompt')
+  @UseGuards(JwtAuthGuard)
+  async updateUserAiPrompt(
+    @CurrentUserId() userId: number,
+    @Body('prompt') prompt: string,
+  ) {
+    return this.systemConfigService.updateUserAiPrompt(userId, prompt);
+  }
+
+  @Post('ai-prompt/reset')
+  @UseGuards(JwtAuthGuard)
+  async resetUserAiPrompt(@CurrentUserId() userId: number) {
+    return this.systemConfigService.resetUserAiPrompt(userId);
   }
 }

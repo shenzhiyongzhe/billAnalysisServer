@@ -95,4 +95,88 @@ export class SystemConfigService {
   getDefaultAiSystemPrompt() {
     return DEFAULT_AI_SYSTEM_PROMPT;
   }
+
+  async getUserOrSystemAiPrompt(userId: number): Promise<string> {
+    const userPrompt = await this.prisma.userPromptTemplate.findUnique({
+      where: { userId },
+    });
+    if (userPrompt && userPrompt.prompt.trim()) {
+      return userPrompt.prompt.trim();
+    }
+    return this.getAiSystemPrompt();
+  }
+
+  async getUserAiPromptDetail(userId: number) {
+    const user = await this.prisma.wechatUser.findUnique({
+      where: { id: userId },
+      select: { level: true },
+    });
+    const isAdmin = user?.level === 999;
+
+    if (isAdmin) {
+      const adminPrompt = await this.getAdminAiSystemPrompt();
+      return {
+        prompt: adminPrompt.prompt,
+        isDefault: adminPrompt.isDefault,
+        isAdmin: true,
+      };
+    }
+
+    const userPrompt = await this.prisma.userPromptTemplate.findUnique({
+      where: { userId },
+    });
+    const stored = userPrompt?.prompt?.trim();
+    return {
+      prompt: stored || (await this.getAiSystemPrompt()),
+      isDefault: !stored,
+      isAdmin: false,
+    };
+  }
+
+  async updateUserAiPrompt(userId: number, prompt: string) {
+    const trimmed = prompt.trim();
+    if (!trimmed) {
+      throw new BadRequestException('提示词不能为空');
+    }
+
+    const user = await this.prisma.wechatUser.findUnique({
+      where: { id: userId },
+      select: { level: true },
+    });
+    const isAdmin = user?.level === 999;
+
+    if (isAdmin) {
+      return this.updateAiSystemPrompt(prompt);
+    }
+
+    await this.prisma.userPromptTemplate.upsert({
+      where: { userId },
+      update: { prompt: trimmed },
+      create: { userId, prompt: trimmed },
+    });
+
+    return { success: true };
+  }
+
+  async resetUserAiPrompt(userId: number) {
+    const user = await this.prisma.wechatUser.findUnique({
+      where: { id: userId },
+      select: { level: true },
+    });
+    const isAdmin = user?.level === 999;
+
+    if (isAdmin) {
+      return this.resetAiSystemPrompt();
+    }
+
+    await this.prisma.userPromptTemplate.deleteMany({
+      where: { userId },
+    });
+
+    const defaultPrompt = await this.getAiSystemPrompt();
+    return {
+      success: true,
+      prompt: defaultPrompt,
+    };
+  }
 }
