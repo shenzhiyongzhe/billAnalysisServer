@@ -97,30 +97,30 @@ jobs:
             export DOCKER_IMAGE="${IMAGE_FULL_SHA}"
             bash deploy/remote-deploy.sh
 
-  # # 并行部署到服务器2（需配置 DEPLOY_HOST_2 变量）
-  # deploy-server-2:
-  #   needs: build-and-push
-  #   runs-on: ubuntu-latest
-  #   if: |
-  #     (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
-  #     vars.DEPLOY_HOST_2 != ''
-  #   steps:
-  #     - uses: appleboy/ssh-action@v1.2.0
-  #       with:
-  #         host: ${{ vars.DEPLOY_HOST_2 }}
-  #         username: ${{ vars.DEPLOY_USER }}
-  #         key: ${{ secrets.DEPLOY_SSH_KEY }}
-  #         script_stop: true
-  #         script: |
-  #           set -exo pipefail
-  #           cd "${{ env.DEPLOY_PATH }}"
-  #           if [ ! -f .env ]; then
-  #             echo "Error: .env not found in ${{ env.DEPLOY_PATH }}"
-  #             exit 1
-  #           fi
-  #           # 直接在 script 中 export，避免 envs 机制传递空值的歧义
-  #           export DOCKER_IMAGE="${{ needs.build-and-push.outputs.image_full_sha }}"
-  #           export DOCKER_NETWORK="${{ env.DEPLOY_DOCKER_NETWORK }}"
-  #           echo "[workflow] DOCKER_NETWORK=${DOCKER_NETWORK}" >&2
-  #           bash deploy/remote-deploy.sh
+  # 并行部署到服务器2（需配置 DEPLOY_HOST_2 变量）
+  deploy-server-2:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: |
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
+      vars.DEPLOY_HOST_2 != ''
+    steps:
+      - uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ vars.DEPLOY_HOST_2 }}
+          username: ${{ vars.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -exo pipefail
+            cd "${{ env.DEPLOY_PATH }}"
+            if [ ! -f .env ]; then
+              echo "Error: .env not found in ${{ env.DEPLOY_PATH }}"
+              exit 1
+            fi
+            # 直接在 script 中 export，避免 envs 机制传递空值的歧义
+            export DOCKER_IMAGE="${{ needs.build-and-push.outputs.image_full_sha }}"
+            export DOCKER_NETWORK="${{ env.DEPLOY_DOCKER_NETWORK }}"
+            echo "[workflow] DOCKER_NETWORK=${DOCKER_NETWORK}" >&2
+            bash deploy/remote-deploy.sh
 
