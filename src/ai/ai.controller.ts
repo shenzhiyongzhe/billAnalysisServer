@@ -27,12 +27,14 @@ export class AiController {
     @Param('id') id: string,
     @CurrentUserId() userId: number,
     @Body('userNotes') userNotes = '',
+    @Body('useTemplate') useTemplate = true,
   ) {
     try {
       const report = await this.aiService.analyzeStatement(
         parseInt(id, 10),
         userId,
         userNotes,
+        useTemplate,
       );
       return { report };
     } catch (err: unknown) {

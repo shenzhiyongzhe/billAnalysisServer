@@ -437,7 +437,7 @@ export class AiService {
     };
   }
 
-  private buildUserPrompt(features: RiskFeatures): string {
+  private buildUserPrompt(features: RiskFeatures, useTemplate = true): string {
     const bi = features.basicInfo;
     const bo = features.billOverview;
     const gs = features.gamblingSignals;
@@ -485,6 +485,45 @@ export class AiService {
           .join('\n')
         : '  未发现明显疑似在库固定金额序列';
 
+    if (!useTemplate) {
+      return `请根据以下结构化账单特征数据，认真回答用户的补充信息/提问：
+
+==== 补充信息/用户提问 ====
+${ui.userNotes || '（未提供具体提问，请对账单进行自由分析）'}
+
+==== 结构化账单数据 ====
+==== 基本信息 ====
+姓名：${bi.name}
+身份证后4位：${bi.maskedIdNumber ? bi.maskedIdNumber.slice(-4) : '未知'}
+性别：${bi.genderText || '未知'}
+年龄：${bi.age ? bi.age + '岁' : '未知'}
+户籍地：${bi.nativePlace || '未知'}
+账单来源：${bi.source}
+账单时间段：${bi.startDate} 至 ${bi.endDate}
+
+==== 账单概况 ====
+总记录数：${bo.totalRecords}笔
+总收入：¥${bo.totalIncome}
+总支出：¥${bo.totalExpenditure}
+净额：¥${bo.netAmount}
+账单跨度：${bo.monthCount}个月
+月均收入：¥${bo.avgMonthlyIncome}
+月均支出：¥${bo.avgMonthlyExpenditure}
+
+==== 疑似在库与疑似在退 ====
+疑似在库交易（连续4天及以上固定金额支出，金额>=30）：
+${inDbText}
+
+疑似在退交易（属于疑似在库且时间在近7天内）：
+${withdrawText}
+
+==== 赌博风险信号 ====
+${gamblingText}
+
+==== 高频交易对手方（Top 10）====
+${topCpText}`;
+    }
+
     return `请根据以下结构化账单特征数据，以专业风控视角生成分析报告。
 
 ==== 基本信息 ====
@@ -531,6 +570,7 @@ ${ui.userNotes ? ui.userNotes : '未提供补充信息'}
     recordId: number,
     userId: number,
     userNotes: string,
+    useTemplate = true,
   ): Promise<string> {
     await this.assertOwnership(recordId, userId);
 
@@ -558,7 +598,7 @@ ${ui.userNotes ? ui.userNotes : '未提供补充信息'}
       { userNotes },
     );
 
-    const userPrompt = this.buildUserPrompt(features);
+    const userPrompt = this.buildUserPrompt(features, useTemplate);
 
     const apiBase = (process.env.AI_API_BASE_URL || '').replace(/\/$/, '');
     const apiKey = process.env.AI_API_KEY || '';
@@ -573,7 +613,12 @@ ${ui.userNotes ? ui.userNotes : '未提供补充信息'}
 
     this.logger.log(`Calling AI API for record ${recordId}, model=${model}, transactions=${transactions.length}`);
 
-    const systemPrompt = await this.systemConfigService.getUserOrSystemAiPrompt(userId);
+    let systemPrompt: string;
+    if (useTemplate) {
+      systemPrompt = await this.systemConfigService.getUserOrSystemAiPrompt(userId);
+    } else {
+      systemPrompt = '你是一个专业的账单分析与风控助手。请根据提供的结构化账单数据，认真回答用户的提问或执行用户的指令。回答时要专业、准确、有条理。';
+    }
 
     const response = await fetch(`${apiBase}/chat/completions`, {
       method: 'POST',
