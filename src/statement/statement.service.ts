@@ -121,15 +121,18 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     return this.pdfExtractor.extract(buffer, password, onProgress);
   }
 
-  async processAndSaveFile(userId: number, buffer: Buffer, originalname: string): Promise<number> {
+  async processAndSaveFile(
+    userId: number,
+    buffer: Buffer,
+    originalname: string,
+  ): Promise<{ id: number; isDuplicate: boolean }> {
     const md5 = crypto.createHash('md5').update(buffer).digest('hex');
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
 
-    // 0. Check if a duplicate successful record exists in the last 3 days
+    // 0. Check if a duplicate record exists in the last 3 days
     const existing = await this.prisma.queryRecord.findFirst({
       where: {
         userId,
-        status: 'done',
         filePath: {
           startsWith: md5,
         },
@@ -138,8 +141,22 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     });
 
     if (existing) {
-      this.logger.log(`Found duplicate statement upload by hash for user ${userId}, reusing record ${existing.id}`);
-      return existing.id;
+      const isFormatError =
+        existing.status === 'failed' &&
+        existing.summaryJson &&
+        typeof existing.summaryJson === 'object' &&
+        (existing.summaryJson as any).error?.includes('格式');
+
+      if (
+        existing.status === 'done' ||
+        existing.status === 'password_required' ||
+        isFormatError
+      ) {
+        this.logger.log(
+          `Found duplicate statement upload by hash for user ${userId}, reusing record ${existing.id}`,
+        );
+        return { id: existing.id, isDuplicate: true };
+      }
     }
 
     // ① 校验用户并根据月卡状态决定是否扣减次数
@@ -196,7 +213,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       void this.parseAndUpdateRecord(recordId, userId, buffer, fileName);
     });
 
-    return recordId;
+    return { id: recordId, isDuplicate: false };
   }
   private async parseAndUpdateRecord(
     recordId: number,
@@ -266,9 +283,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       });
 
       if (parsedData.transactions.length === 0) {
-        this.logger.warn(
-          `Parsed 0 transactions for record ${recordId} (${source}, ${fileName})`,
-        );
+        throw new BadRequestException('该账单文件解析出的交易流水为空，可能由于账单内容格式不受支持。目前支持标准的微信、支付宝及主流银行借记卡交易流水。');
       } else {
         this.logger.log(
           `Parsed ${parsedData.transactions.length} transactions for record ${recordId} (${source})`,
@@ -403,11 +418,15 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       });
       const failNow = new Date();
       const userHadMonthlyCard = failedUser?.monthlyCardExpiry != null && failedUser.monthlyCardExpiry > failNow;
+      const errorMsg = err instanceof Error ? err.message : String(err);
 
       await Promise.all([
         this.prisma.queryRecord.update({
           where: { id: recordId },
-          data: { status: 'failed' },
+          data: { 
+            status: 'failed',
+            summaryJson: { error: errorMsg } as any,
+          },
         }),
         this.prisma.wechatUser.update({
           where: { id: userId },
@@ -423,7 +442,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
   async getRecordStatus(recordId: number, userId: number) {
     const record = await this.prisma.queryRecord.findUnique({
       where: { id: recordId },
-      select: { userId: true, status: true },
+      select: { userId: true, status: true, summaryJson: true },
     });
     if (!record) throw new NotFoundException('Record not found');
     if (!(await this.isOwnerOrAdmin(record.userId, userId))) {
@@ -460,13 +479,20 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       '如果解析失败，请检查账单文件是否完整或密码是否正确。'
     ];
 
+    let error: string | null = null;
+    if (record.status === 'failed' && record.summaryJson) {
+      const summary = record.summaryJson as any;
+      error = summary.error || null;
+    }
+
     return {
       status: record.status,
       ready: record.status === 'done',
       progress,
       stage,
       detail,
-      tips
+      tips,
+      error,
     };
   }
 

@@ -20,6 +20,7 @@ import { CurrentUserId } from '../auth/current-user.decorator';
 export class StatementController {
   constructor(private readonly statementService: StatementService) {}
 
+
   @Post('upload')
   @UseInterceptors(FileInterceptor('file'))
   async uploadFile(
@@ -29,12 +30,12 @@ export class StatementController {
     if (!file) {
       throw new BadRequestException('No file uploaded');
     }
-    const recordId = await this.statementService.processAndSaveFile(
+    const result = await this.statementService.processAndSaveFile(
       userId,
       file.buffer,
       file.originalname,
     );
-    return { id: recordId };
+    return { id: result.id, isDuplicate: result.isDuplicate };
   }
 
   @Post(':id/retry')
