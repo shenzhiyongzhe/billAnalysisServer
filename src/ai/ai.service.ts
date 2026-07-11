@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+  Logger,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SystemConfigService } from '../system-config/system-config.service';
 
@@ -17,7 +22,6 @@ interface MonthlyDetail {
   balance: number;
   recordCount: number;
 }
-
 
 interface GamblingCounterparty {
   counterparty: string;
@@ -102,15 +106,19 @@ export class AiService {
   constructor(
     private prisma: PrismaService,
     private systemConfigService: SystemConfigService,
-  ) { }
+  ) {}
 
-  private async assertOwnership(recordId: number, userId: number): Promise<void> {
+  private async assertOwnership(
+    recordId: number,
+    userId: number,
+  ): Promise<void> {
     const record = await this.prisma.queryRecord.findUnique({
       where: { id: recordId },
       select: { userId: true, status: true },
     });
     if (!record) throw new NotFoundException('Record not found');
-    if (record.status !== 'done') throw new NotFoundException('账单尚未解析完成');
+    if (record.status !== 'done')
+      throw new NotFoundException('账单尚未解析完成');
 
     const requestingUser = await this.prisma.wechatUser.findUnique({
       where: { id: userId },
@@ -126,21 +134,28 @@ export class AiService {
    * Enrich raw summaryJson with derived fields (maskedIdNumber, gender, age, nativePlace)
    * from idNumber, mirroring StatementService.enrichSummary logic.
    */
-  private enrichSummaryJson(summaryJson: Record<string, unknown>): Record<string, unknown> {
+  private enrichSummaryJson(
+    summaryJson: Record<string, unknown>,
+  ): Record<string, unknown> {
     const enriched = { ...summaryJson };
     const idNumber = enriched.idNumber as string | undefined;
 
     if (idNumber && !enriched.maskedIdNumber) {
-      enriched.maskedIdNumber = idNumber.length > 8
-        ? idNumber.slice(0, 4) + '*'.repeat(idNumber.length - 8) + idNumber.slice(-4)
-        : idNumber;
+      enriched.maskedIdNumber =
+        idNumber.length > 8
+          ? idNumber.slice(0, 4) +
+            '*'.repeat(idNumber.length - 8) +
+            idNumber.slice(-4)
+          : idNumber;
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const idcard = require('idcard');
         const info = idcard.info(idNumber);
         if (info && info.valid) {
           if (!enriched.nativePlace) enriched.nativePlace = info.address;
-          if (!enriched.genderText) enriched.genderText = info.gender === 'M' ? '男' : info.gender === 'F' ? '女' : '-';
+          if (!enriched.genderText)
+            enriched.genderText =
+              info.gender === 'M' ? '男' : info.gender === 'F' ? '女' : '-';
           if (!enriched.age) enriched.age = info.age;
         }
       } catch (e) {
@@ -171,10 +186,14 @@ export class AiService {
     };
 
     // --- Monthly stats ---
-    const monthMap = new Map<string, { income: number; expenditure: number; count: number }>();
+    const monthMap = new Map<
+      string,
+      { income: number; expenditure: number; count: number }
+    >();
     for (const t of transactions) {
       const month = t.month || (t.date ? t.date.substring(0, 7) : 'unknown');
-      if (!monthMap.has(month)) monthMap.set(month, { income: 0, expenditure: 0, count: 0 });
+      if (!monthMap.has(month))
+        monthMap.set(month, { income: 0, expenditure: 0, count: 0 });
       const m = monthMap.get(month)!;
       m.count += 1;
       if (t.type === '收入') m.income += t.amount;
@@ -191,7 +210,10 @@ export class AiService {
       }));
 
     const totalIncome = monthlyDetails.reduce((s, m) => s + m.income, 0);
-    const totalExpenditure = monthlyDetails.reduce((s, m) => s + m.expenditure, 0);
+    const totalExpenditure = monthlyDetails.reduce(
+      (s, m) => s + m.expenditure,
+      0,
+    );
     const monthCount = monthlyDetails.length || 1;
 
     const billOverview = {
@@ -201,24 +223,41 @@ export class AiService {
       netAmount: Math.round((totalIncome - totalExpenditure) * 100) / 100,
       monthCount,
       avgMonthlyIncome: Math.round((totalIncome / monthCount) * 100) / 100,
-      avgMonthlyExpenditure: Math.round((totalExpenditure / monthCount) * 100) / 100,
+      avgMonthlyExpenditure:
+        Math.round((totalExpenditure / monthCount) * 100) / 100,
       monthlyDetails,
     };
 
     // --- Gambling signals ---
-    const GAMBLING_KEYWORDS = ['xyliu', '破茧成蝶', '邂逅', '上下分', '彩票', '体彩', '福彩', '快三', '时时彩'];
+    const GAMBLING_KEYWORDS = [
+      'xyliu',
+      '破茧成蝶',
+      '邂逅',
+      '上下分',
+      '彩票',
+      '体彩',
+      '福彩',
+      '快三',
+      '时时彩',
+    ];
     let redPacketOutCount = 0;
     let redPacketOutAmount = 0;
     const gamblingCpMap = new Map<string, { out: number; inAmt: number }>();
 
     for (const t of transactions) {
-      if (t.type === '支出' && (t.counterparty.includes('群红包') || t.counterparty.includes('红包'))) {
+      if (
+        t.type === '支出' &&
+        (t.counterparty.includes('群红包') || t.counterparty.includes('红包'))
+      ) {
         redPacketOutCount++;
         redPacketOutAmount += t.amount;
       }
-      const isGamble = GAMBLING_KEYWORDS.some((k) => t.counterparty.includes(k));
+      const isGamble = GAMBLING_KEYWORDS.some((k) =>
+        t.counterparty.includes(k),
+      );
       if (isGamble) {
-        if (!gamblingCpMap.has(t.counterparty)) gamblingCpMap.set(t.counterparty, { out: 0, inAmt: 0 });
+        if (!gamblingCpMap.has(t.counterparty))
+          gamblingCpMap.set(t.counterparty, { out: 0, inAmt: 0 });
         const entry = gamblingCpMap.get(t.counterparty)!;
         if (t.type === '支出') entry.out += t.amount;
         else if (t.type === '收入') entry.inAmt += t.amount;
@@ -235,21 +274,30 @@ export class AiService {
 
     // Fast in fast out
     let fastInFastOutEvents = 0;
-    const incomeList = transactions.filter((t) => t.type === '收入' && t.amount >= 500);
-    const outList = transactions.filter((t) => t.type === '支出' && t.amount >= 500);
+    const incomeList = transactions.filter(
+      (t) => t.type === '收入' && t.amount >= 500,
+    );
+    const outList = transactions.filter(
+      (t) => t.type === '支出' && t.amount >= 500,
+    );
     for (const inc of incomeList) {
       const incDate = new Date(inc.date.replace(/-/g, '/'));
       if (isNaN(incDate.getTime())) continue;
       const matchOut = outList.find((out) => {
         const outDate = new Date(out.date.replace(/-/g, '/'));
         if (isNaN(outDate.getTime())) return false;
-        const diffH = Math.abs(outDate.getTime() - incDate.getTime()) / (1000 * 60 * 60);
-        return diffH <= 24 && Math.abs(out.amount - inc.amount) / inc.amount < 0.1;
+        const diffH =
+          Math.abs(outDate.getTime() - incDate.getTime()) / (1000 * 60 * 60);
+        return (
+          diffH <= 24 && Math.abs(out.amount - inc.amount) / inc.amount < 0.1
+        );
       });
       if (matchOut) fastInFastOutEvents++;
     }
 
-    const suspectedGamblingCounterparties: GamblingCounterparty[] = Array.from(gamblingCpMap.entries())
+    const suspectedGamblingCounterparties: GamblingCounterparty[] = Array.from(
+      gamblingCpMap.entries(),
+    )
       .map(([cp, v]) => ({
         counterparty: cp,
         totalOut: Math.round(v.out * 100) / 100,
@@ -271,11 +319,15 @@ export class AiService {
     };
 
     // --- Top counterparties ---
-    const cpAmountMap = new Map<string, { totalAmount: number; count: number; type: string }>();
+    const cpAmountMap = new Map<
+      string,
+      { totalAmount: number; count: number; type: string }
+    >();
     for (const t of transactions) {
       if (t.type === '不计收支') continue;
       const key = `${t.counterparty}||${t.type}`;
-      if (!cpAmountMap.has(key)) cpAmountMap.set(key, { totalAmount: 0, count: 0, type: t.type });
+      if (!cpAmountMap.has(key))
+        cpAmountMap.set(key, { totalAmount: 0, count: 0, type: t.type });
       const entry = cpAmountMap.get(key)!;
       entry.totalAmount += t.amount;
       entry.count += 1;
@@ -333,15 +385,19 @@ export class AiService {
       const start = new Date(
         Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()),
       );
-      start.setUTCDate(start.getUTCDate() - (SUSPECTED_WITHDRAW_WINDOW_DAYS - 1));
+      start.setUTCDate(
+        start.getUTCDate() - (SUSPECTED_WITHDRAW_WINDOW_DAYS - 1),
+      );
       const y = start.getUTCFullYear();
       const m = String(start.getUTCMonth() + 1).padStart(2, '0');
       const d = String(start.getUTCDate()).padStart(2, '0');
       return `${y}-${m}-${d}`;
     };
 
-    const getSuspectedPatternKey = (t: { counterparty: string; amount: number }) =>
-      `${t.counterparty}${GROUP_KEY_SEP}${t.amount.toFixed(2)}`;
+    const getSuspectedPatternKey = (t: {
+      counterparty: string;
+      amount: number;
+    }) => `${t.counterparty}${GROUP_KEY_SEP}${t.amount.toFixed(2)}`;
 
     // Group dates by patternKey
     const patternDates = new Map<string, string[]>();
@@ -373,11 +429,18 @@ export class AiService {
     });
 
     // Group In DB transactions by pattern to build summaries
-    const inDbGroups = new Map<string, { counterparty: string; amount: number; dates: string[] }>();
+    const inDbGroups = new Map<
+      string,
+      { counterparty: string; amount: number; dates: string[] }
+    >();
     for (const t of inDbTransactions) {
       const patternKey = getSuspectedPatternKey(t);
       if (!inDbGroups.has(patternKey)) {
-        inDbGroups.set(patternKey, { counterparty: t.counterparty, amount: t.amount, dates: [] });
+        inDbGroups.set(patternKey, {
+          counterparty: t.counterparty,
+          amount: t.amount,
+          dates: [],
+        });
       }
       const dateKey = extractDateKey(t.date);
       if (dateKey) {
@@ -400,7 +463,9 @@ export class AiService {
     inDbSummaries.sort((a, b) => b.totalAmount - a.totalAmount);
 
     const totalInDbCount = inDbTransactions.length;
-    const totalInDbAmount = Math.round(inDbTransactions.reduce((s, t) => s + t.amount, 0) * 100) / 100;
+    const totalInDbAmount =
+      Math.round(inDbTransactions.reduce((s, t) => s + t.amount, 0) * 100) /
+      100;
 
     // Filter suspected withdraw transactions
     const recentWindowStart = getRecentWindowStartKey();
@@ -409,14 +474,18 @@ export class AiService {
       return dateKey && dateKey >= recentWindowStart;
     });
 
-    const withdrawDetails: SuspectedWithdrawDetail[] = withdrawTransactions.map((t) => ({
-      date: t.date,
-      amount: t.amount,
-      counterparty: t.counterparty,
-    })).sort((a, b) => b.date.localeCompare(a.date));
+    const withdrawDetails: SuspectedWithdrawDetail[] = withdrawTransactions
+      .map((t) => ({
+        date: t.date,
+        amount: t.amount,
+        counterparty: t.counterparty,
+      }))
+      .sort((a, b) => b.date.localeCompare(a.date));
 
     const totalWithdrawCount = withdrawTransactions.length;
-    const totalWithdrawAmount = Math.round(withdrawTransactions.reduce((s, t) => s + t.amount, 0) * 100) / 100;
+    const totalWithdrawAmount =
+      Math.round(withdrawTransactions.reduce((s, t) => s + t.amount, 0) * 100) /
+      100;
 
     const suspectedInDbAndWithdraw: SuspectedInDbAndWithdraw = {
       totalInDbCount,
@@ -457,32 +526,38 @@ export class AiService {
       `  快进快出事件（同天同额±10%）：${gs.fastInFastOutEvents}次`,
       gs.suspectedGamblingCounterparties.length > 0
         ? '  疑似赌博渠道：\n' +
-        gs.suspectedGamblingCounterparties
-          .map((c) => `    - ${c.counterparty} 支出¥${c.totalOut} 收入¥${c.totalIn} 净亏损¥${c.netLoss}`)
-          .join('\n')
+          gs.suspectedGamblingCounterparties
+            .map(
+              (c) =>
+                `    - ${c.counterparty} 支出¥${c.totalOut} 收入¥${c.totalIn} 净亏损¥${c.netLoss}`,
+            )
+            .join('\n')
         : '  未识别到已知赌博关键词渠道（不代表无赌博，请结合高频小额转账判断）',
     ].join('\n');
 
     const topCpText = features.topCounterparties.byAmount
       .slice(0, 10)
-      .map((c) => `  - 【${c.type}】${c.counterparty}  ¥${c.totalAmount}（${c.count}笔）`)
+      .map(
+        (c) =>
+          `  - 【${c.type}】${c.counterparty}  ¥${c.totalAmount}（${c.count}笔）`,
+      )
       .join('\n');
 
     const withdrawText =
       ws.withdrawDetails.length > 0
         ? ws.withdrawDetails
-          .map((d) => `  - ${d.date}: ${d.counterparty} 支出¥${d.amount}`)
-          .join('\n')
+            .map((d) => `  - ${d.date}: ${d.counterparty} 支出¥${d.amount}`)
+            .join('\n')
         : '  近7天内未发现明显疑似在退交易';
 
     const inDbText =
       ws.inDbSummaries.length > 0
         ? ws.inDbSummaries
-          .map(
-            (s) =>
-              `  - 对手方「${s.counterparty}」，固定金额¥${s.amount}，共${s.count}笔，累计¥${s.totalAmount} (${s.firstDate} ~ ${s.lastDate})`,
-          )
-          .join('\n')
+            .map(
+              (s) =>
+                `  - 对手方「${s.counterparty}」，固定金额¥${s.amount}，共${s.count}笔，累计¥${s.totalAmount} (${s.firstDate} ~ ${s.lastDate})`,
+            )
+            .join('\n')
         : '  未发现明显疑似在库固定金额序列';
 
     if (!useTemplate) {
@@ -582,15 +657,15 @@ ${ui.userNotes ? ui.userNotes : '未提供补充信息'}
       throw new NotFoundException('账单数据不完整');
     }
 
-    const transactions: Transaction[] = (record.transactionsJson as Record<string, unknown>[]).map(
-      (t) => ({
-        date: (t.date as string) || '',
-        month: (t.month as string) || '',
-        type: t.type as '收入' | '支出' | '不计收支',
-        amount: Number(t.amount) || 0,
-        counterparty: (t.counterparty as string) || '未知',
-      }),
-    );
+    const transactions: Transaction[] = (
+      record.transactionsJson as Record<string, unknown>[]
+    ).map((t) => ({
+      date: (t.date as string) || '',
+      month: (t.month as string) || '',
+      type: t.type as '收入' | '支出' | '不计收支',
+      amount: Number(t.amount) || 0,
+      counterparty: (t.counterparty as string) || '未知',
+    }));
 
     const features = this.extractRiskFeatures(
       record.summaryJson as Record<string, unknown>,
@@ -611,13 +686,17 @@ ${ui.userNotes ? ui.userNotes : '未提供补充信息'}
       return placeholder;
     }
 
-    this.logger.log(`Calling AI API for record ${recordId}, model=${model}, transactions=${transactions.length}`);
+    this.logger.log(
+      `Calling AI API for record ${recordId}, model=${model}, transactions=${transactions.length}`,
+    );
 
     let systemPrompt: string;
     if (useTemplate) {
-      systemPrompt = await this.systemConfigService.getUserOrSystemAiPrompt(userId);
+      systemPrompt =
+        await this.systemConfigService.getUserOrSystemAiPrompt(userId);
     } else {
-      systemPrompt = '你是一个专业的账单分析与风控助手。请根据提供的结构化账单数据，认真回答用户的提问或执行用户的指令。回答时要专业、准确、有条理。';
+      systemPrompt =
+        '你是一个专业的账单分析与风控助手。请根据提供的结构化账单数据，认真回答用户的提问或执行用户的指令。回答时要专业、准确、有条理。';
     }
 
     const response = await fetch(`${apiBase}/chat/completions`, {
@@ -645,7 +724,9 @@ ${ui.userNotes ? ui.userNotes : '未提供补充信息'}
       throw new Error(`AI 服务调用失败（状态码 ${response.status}）`);
     }
 
-    const json = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const json = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
     const content = json?.choices?.[0]?.message?.content;
     if (!content) {
       throw new Error('AI 返回数据格式异常');

@@ -42,7 +42,12 @@ export class AdminController {
     @Body('reason') reason: string,
     @CurrentUserId() adminId: number,
   ) {
-    return this.adminService.updateUserQueries(id, remainingQueries, adminId, reason);
+    return this.adminService.updateUserQueries(
+      id,
+      remainingQueries,
+      adminId,
+      reason,
+    );
   }
 
   @Post('users/:id/monthly-card')

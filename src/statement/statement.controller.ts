@@ -20,7 +20,6 @@ import { CurrentUserId } from '../auth/current-user.decorator';
 export class StatementController {
   constructor(private readonly statementService: StatementService) {}
 
-
   @Post('upload')
   @UseInterceptors(FileInterceptor('file'))
   async uploadFile(
@@ -68,10 +67,7 @@ export class StatementController {
   }
 
   @Get(':id/counterparties')
-  getCounterparties(
-    @Param('id') id: string,
-    @CurrentUserId() userId: number,
-  ) {
+  getCounterparties(@Param('id') id: string, @CurrentUserId() userId: number) {
     return this.statementService.getCounterparties(parseInt(id, 10), userId);
   }
 
@@ -94,7 +90,11 @@ export class StatementController {
     if (!counterparty || !category) {
       throw new BadRequestException('Counterparty and category are required');
     }
-    return this.statementService.saveUserCustomCategory(userId, counterparty.trim(), category.trim());
+    return this.statementService.saveUserCustomCategory(
+      userId,
+      counterparty.trim(),
+      category.trim(),
+    );
   }
 
   @Get('categories')

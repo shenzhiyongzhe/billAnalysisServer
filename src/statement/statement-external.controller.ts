@@ -28,7 +28,8 @@ export class StatementExternalController {
 
   private validateApiKey(headers: any, query?: any) {
     const apiKey = headers['x-api-key'] || query?.apiKey;
-    const expectedKey = process.env.EXTERNAL_API_KEY || 'bill_query_record_secret_key_2026';
+    const expectedKey =
+      process.env.EXTERNAL_API_KEY || 'bill_query_record_secret_key_2026';
     if (apiKey !== expectedKey) {
       throw new UnauthorizedException('Invalid API Key');
     }
@@ -70,7 +71,8 @@ export class StatementExternalController {
 
     const results: Record<string, any[]> = {};
     const baseUrl = process.env.APP_BASE_URL || 'https://www.qkyfx.com';
-    const apiKey = process.env.EXTERNAL_API_KEY || 'bill_query_record_secret_key_2026';
+    const apiKey =
+      process.env.EXTERNAL_API_KEY || 'bill_query_record_secret_key_2026';
 
     // 根据 name 和 endOfId 分类匹配
     for (const q of queries) {

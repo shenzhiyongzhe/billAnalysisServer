@@ -3,11 +3,18 @@ import { PrismaService } from '../prisma.service';
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) { }
+  constructor(private readonly prisma: PrismaService) {}
 
-  async getUsers(search?: string, pageStr?: string, limitStr?: string, orderByStr?: string) {
+  async getUsers(
+    search?: string,
+    pageStr?: string,
+    limitStr?: string,
+    orderByStr?: string,
+  ) {
     const page = pageStr ? Math.max(1, parseInt(pageStr, 10)) : 1;
-    const limit = limitStr ? Math.min(100, Math.max(1, parseInt(limitStr, 10))) : 20;
+    const limit = limitStr
+      ? Math.min(100, Math.max(1, parseInt(limitStr, 10)))
+      : 20;
     const skip = (page - 1) * limit;
 
     const ORDER_MAP: Record<string, any> = {
@@ -21,7 +28,12 @@ export class AdminService {
     const orderBy = ORDER_MAP[orderByStr ?? ''] ?? { createdAt: 'desc' };
 
     const where: any = {};
-    if (search && search !== "undefined" && search !== "null" && search.trim() !== "") {
+    if (
+      search &&
+      search !== 'undefined' &&
+      search !== 'null' &&
+      search.trim() !== ''
+    ) {
       where.OR = [
         { nickname: { contains: search, mode: 'insensitive' } },
         { displayId: search },
@@ -60,7 +72,12 @@ export class AdminService {
     };
   }
 
-  async updateUserQueries(userId: number, remainingQueries: number, adminId?: number, reason?: string) {
+  async updateUserQueries(
+    userId: number,
+    remainingQueries: number,
+    adminId?: number,
+    reason?: string,
+  ) {
     const user = await this.prisma.wechatUser.findUnique({
       where: { id: userId },
     });
@@ -93,7 +110,12 @@ export class AdminService {
     });
   }
 
-  async grantMonthlyCard(userId: number, months = 1, adminId?: number, reason?: string) {
+  async grantMonthlyCard(
+    userId: number,
+    months = 1,
+    adminId?: number,
+    reason?: string,
+  ) {
     const user = await this.prisma.wechatUser.findUnique({
       where: { id: userId },
     });
@@ -105,9 +127,13 @@ export class AdminService {
     const days = validMonths * 30;
 
     const now = new Date();
-    const existingExpiry = user.monthlyCardExpiry ? new Date(user.monthlyCardExpiry) : null;
+    const existingExpiry = user.monthlyCardExpiry
+      ? new Date(user.monthlyCardExpiry)
+      : null;
     const base =
-      existingExpiry && existingExpiry.getTime() > now.getTime() ? existingExpiry : now;
+      existingExpiry && existingExpiry.getTime() > now.getTime()
+        ? existingExpiry
+        : now;
     const expiry = new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
 
     const monthLabel = validMonths === 6 ? '半年' : `${validMonths}个月`;
@@ -141,7 +167,12 @@ export class AdminService {
 
     const where: any = {};
 
-    if (search && search !== "undefined" && search !== "null" && search.trim() !== "") {
+    if (
+      search &&
+      search !== 'undefined' &&
+      search !== 'null' &&
+      search.trim() !== ''
+    ) {
       const orConditions: any[] = [
         {
           statementUser: {
@@ -284,7 +315,9 @@ export class AdminService {
     });
 
     const todayUserIds = todayQueriesGroup.map((g) => g.userId);
-    const todayCountsMap = new Map(todayQueriesGroup.map((g) => [g.userId, g._count.id]));
+    const todayCountsMap = new Map(
+      todayQueriesGroup.map((g) => [g.userId, g._count.id]),
+    );
 
     const todayUsers = await this.prisma.wechatUser.findMany({
       where: {

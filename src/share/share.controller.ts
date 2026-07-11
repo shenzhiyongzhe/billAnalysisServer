@@ -1,4 +1,10 @@
-import { Controller, Post, Body, UseGuards, ParseIntPipe } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  UseGuards,
+  ParseIntPipe,
+} from '@nestjs/common';
 import { ShareService } from './share.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUserId } from '../auth/current-user.decorator';

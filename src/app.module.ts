@@ -13,18 +13,17 @@ import { AiModule } from './ai/ai.module';
 
 @Module({
   imports: [
-    PrismaModule, 
-    StatementModule, 
+    PrismaModule,
+    StatementModule,
     AuthModule,
     AdminModule,
     ShareModule,
     SystemConfigModule,
     StatisticsModule,
     AiModule,
-    ScheduleModule.forRoot()
+    ScheduleModule.forRoot(),
   ],
   controllers: [AppController],
   providers: [AppService],
 })
 export class AppModule {}
-

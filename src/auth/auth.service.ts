@@ -8,7 +8,10 @@ import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../prisma.service';
 import { AuthTokensResponse, PublicUser } from './public-user.dto';
 
-function parseExpiresToSeconds(expires: string | undefined, fallback: number): number {
+function parseExpiresToSeconds(
+  expires: string | undefined,
+  fallback: number,
+): number {
   if (!expires) return fallback;
   const match = expires.trim().match(/^(\d+)([smhd])$/i);
   if (!match) return fallback;
@@ -73,7 +76,9 @@ export class AuthService {
       avatar: user.avatar,
       remainingQueries: user.remainingQueries,
       level: user.level,
-      monthlyCardExpiry: user.monthlyCardExpiry ? user.monthlyCardExpiry.toISOString() : null,
+      monthlyCardExpiry: user.monthlyCardExpiry
+        ? user.monthlyCardExpiry.toISOString()
+        : null,
     };
   }
 
@@ -136,7 +141,11 @@ export class AuthService {
     return this.toPublicUser(user);
   }
 
-  async updateProfile(userId: number, nickname?: string, avatar?: string): Promise<PublicUser> {
+  async updateProfile(
+    userId: number,
+    nickname?: string,
+    avatar?: string,
+  ): Promise<PublicUser> {
     const data: any = {};
     if (nickname !== undefined) data.nickname = nickname;
     if (avatar !== undefined) data.avatar = avatar;
@@ -214,13 +223,17 @@ export class AuthService {
       const queriesConfig = await this.prisma.systemConfig.findUnique({
         where: { key: 'default_remaining_queries' },
       });
-      const defaultRemainingQueries = queriesConfig ? parseInt(queriesConfig.value, 10) : 500;
+      const defaultRemainingQueries = queriesConfig
+        ? parseInt(queriesConfig.value, 10)
+        : 500;
 
       user = await this.prisma.wechatUser.create({
         data: {
           openid,
           displayId,
-          remainingQueries: isNaN(defaultRemainingQueries) ? 500 : defaultRemainingQueries,
+          remainingQueries: isNaN(defaultRemainingQueries)
+            ? 500
+            : defaultRemainingQueries,
         },
       });
     }

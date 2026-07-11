@@ -53,7 +53,7 @@ export class StatisticsService {
     // 3. Total queries overall up to now (accumulated from yesterday's stats + today's queries)
     const yesterdayDate = new Date(startOfDate);
     yesterdayDate.setDate(yesterdayDate.getDate() - 1);
-    
+
     const yesterdayStats = await this.prisma.dailyStatistics.findUnique({
       where: { date: yesterdayDate },
       select: { totalQueries: true, totalRecharges: true },
@@ -77,11 +77,11 @@ export class StatisticsService {
       select: { createdAt: true },
     });
     const firstDate = firstStat?.date || firstRecord?.createdAt || startOfDate;
-    
+
     // Convert dates to absolute day numbers to avoid time offset errors
     const startOfFirstDate = new Date(firstDate);
     startOfFirstDate.setHours(0, 0, 0, 0);
-    
+
     const diffMs = startOfDate.getTime() - startOfFirstDate.getTime();
     const diffDays = Math.max(1, Math.ceil(diffMs / (1000 * 60 * 60 * 24)) + 1); // include the first day itself
     const avgQueriesPerDay = parseFloat((totalQueries / diffDays).toFixed(2));

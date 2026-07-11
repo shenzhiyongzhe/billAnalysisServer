@@ -58,10 +58,13 @@ export class PdfTextExtractor {
     }
 
     const localCMapUrl =
-      path.resolve(process.cwd(), 'node_modules/pdfjs-dist/cmaps').replace(/\\/g, '/') + '/';
+      path
+        .resolve(process.cwd(), 'node_modules/pdfjs-dist/cmaps')
+        .replace(/\\/g, '/') + '/';
     const localStandardFontDataUrl =
-      path.resolve(process.cwd(), 'node_modules/pdfjs-dist/standard_fonts').replace(/\\/g, '/') +
-      '/';
+      path
+        .resolve(process.cwd(), 'node_modules/pdfjs-dist/standard_fonts')
+        .replace(/\\/g, '/') + '/';
 
     const taskId = this.nextTaskId++;
     const text = await new Promise<string>((resolve, reject) => {
@@ -186,7 +189,9 @@ export class PdfTextExtractor {
     this.worker.on('exit', (code) => {
       if (this.shuttingDown) return;
       if (code !== 0) {
-        this.logger.error(`PDF parse worker exited with code ${code}, recreating...`);
+        this.logger.error(
+          `PDF parse worker exited with code ${code}, recreating...`,
+        );
         this.recreateWorker();
       }
     });
@@ -205,7 +210,9 @@ export class PdfTextExtractor {
     const failedTasks = Array.from(this.pendingTasks.values());
     this.pendingTasks.clear();
     for (const task of failedTasks) {
-      task.reject(new Error('PDF parse worker crashed or exited during execution'));
+      task.reject(
+        new Error('PDF parse worker crashed or exited during execution'),
+      );
     }
 
     this.initializeWorker();

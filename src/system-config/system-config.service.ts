@@ -13,8 +13,14 @@ export class SystemConfigService {
     const notice = await this.prisma.systemConfig.findUnique({
       where: { key: 'notice_text' },
     });
+    const enableCustomPrompt = await this.prisma.systemConfig.findUnique({
+      where: { key: 'enable_custom_prompt' },
+    });
     return {
       noticeText: notice ? notice.value : '欢迎使用智能账单分析助手！',
+      enableCustomPrompt: enableCustomPrompt
+        ? enableCustomPrompt.value === 'true'
+        : false,
     };
   }
 
@@ -25,18 +31,33 @@ export class SystemConfigService {
     const notice = await this.prisma.systemConfig.findUnique({
       where: { key: 'notice_text' },
     });
+    const enableCustomPrompt = await this.prisma.systemConfig.findUnique({
+      where: { key: 'enable_custom_prompt' },
+    });
 
     return {
-      defaultRemainingQueries: defaultQueries ? parseInt(defaultQueries.value, 10) : 500,
+      defaultRemainingQueries: defaultQueries
+        ? parseInt(defaultQueries.value, 10)
+        : 500,
       noticeText: notice ? notice.value : '欢迎使用智能账单分析助手！',
+      enableCustomPrompt: enableCustomPrompt
+        ? enableCustomPrompt.value === 'true'
+        : false,
     };
   }
 
-  async updateAdminConfig(defaultRemainingQueries: number, noticeText: string) {
+  async updateAdminConfig(
+    defaultRemainingQueries: number,
+    noticeText: string,
+    enableCustomPrompt?: boolean,
+  ) {
     await this.prisma.systemConfig.upsert({
       where: { key: 'default_remaining_queries' },
       update: { value: String(defaultRemainingQueries) },
-      create: { key: 'default_remaining_queries', value: String(defaultRemainingQueries) },
+      create: {
+        key: 'default_remaining_queries',
+        value: String(defaultRemainingQueries),
+      },
     });
 
     await this.prisma.systemConfig.upsert({
@@ -44,6 +65,17 @@ export class SystemConfigService {
       update: { value: noticeText },
       create: { key: 'notice_text', value: noticeText },
     });
+
+    if (enableCustomPrompt !== undefined) {
+      await this.prisma.systemConfig.upsert({
+        where: { key: 'enable_custom_prompt' },
+        update: { value: String(enableCustomPrompt) },
+        create: {
+          key: 'enable_custom_prompt',
+          value: String(enableCustomPrompt),
+        },
+      });
+    }
 
     return { success: true };
   }
@@ -97,6 +129,26 @@ export class SystemConfigService {
   }
 
   async getUserOrSystemAiPrompt(userId: number): Promise<string> {
+    const user = await this.prisma.wechatUser.findUnique({
+      where: { id: userId },
+      select: { level: true },
+    });
+    const isAdmin = user?.level === 999;
+
+    if (!isAdmin) {
+      const enableCustomPromptConfig =
+        await this.prisma.systemConfig.findUnique({
+          where: { key: 'enable_custom_prompt' },
+        });
+      const enableCustomPrompt = enableCustomPromptConfig
+        ? enableCustomPromptConfig.value === 'true'
+        : false;
+
+      if (!enableCustomPrompt) {
+        return this.getAiSystemPrompt();
+      }
+    }
+
     const userPrompt = await this.prisma.userPromptTemplate.findUnique({
       where: { userId },
     });
@@ -113,12 +165,29 @@ export class SystemConfigService {
     });
     const isAdmin = user?.level === 999;
 
+    const enableCustomPromptConfig = await this.prisma.systemConfig.findUnique({
+      where: { key: 'enable_custom_prompt' },
+    });
+    const enableCustomPrompt = enableCustomPromptConfig
+      ? enableCustomPromptConfig.value === 'true'
+      : false;
+
     if (isAdmin) {
       const adminPrompt = await this.getAdminAiSystemPrompt();
       return {
         prompt: adminPrompt.prompt,
         isDefault: adminPrompt.isDefault,
         isAdmin: true,
+        enableCustomPrompt,
+      };
+    }
+
+    if (!enableCustomPrompt) {
+      return {
+        prompt: '',
+        isDefault: true,
+        isAdmin: false,
+        enableCustomPrompt: false,
       };
     }
 
@@ -130,6 +199,7 @@ export class SystemConfigService {
       prompt: stored || (await this.getAiSystemPrompt()),
       isDefault: !stored,
       isAdmin: false,
+      enableCustomPrompt,
     };
   }
 
@@ -147,6 +217,17 @@ export class SystemConfigService {
 
     if (isAdmin) {
       return this.updateAiSystemPrompt(prompt);
+    }
+
+    const enableCustomPromptConfig = await this.prisma.systemConfig.findUnique({
+      where: { key: 'enable_custom_prompt' },
+    });
+    const enableCustomPrompt = enableCustomPromptConfig
+      ? enableCustomPromptConfig.value === 'true'
+      : false;
+
+    if (!enableCustomPrompt) {
+      throw new BadRequestException('自定义提示词功能已被禁用');
     }
 
     await this.prisma.userPromptTemplate.upsert({
@@ -167,6 +248,17 @@ export class SystemConfigService {
 
     if (isAdmin) {
       return this.resetAiSystemPrompt();
+    }
+
+    const enableCustomPromptConfig = await this.prisma.systemConfig.findUnique({
+      where: { key: 'enable_custom_prompt' },
+    });
+    const enableCustomPrompt = enableCustomPromptConfig
+      ? enableCustomPromptConfig.value === 'true'
+      : false;
+
+    if (!enableCustomPrompt) {
+      throw new BadRequestException('自定义提示词功能已被禁用');
     }
 
     await this.prisma.userPromptTemplate.deleteMany({

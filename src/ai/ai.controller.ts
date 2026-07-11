@@ -51,10 +51,7 @@ export class AiController {
    * Returns: { reports: Array<{ id, userNotes, model, createdAt }> }
    */
   @Get('statements/:id/reports')
-  async listReports(
-    @Param('id') id: string,
-    @CurrentUserId() userId: number,
-  ) {
+  async listReports(@Param('id') id: string, @CurrentUserId() userId: number) {
     try {
       const reports = await this.aiService.listReports(
         parseInt(id, 10),

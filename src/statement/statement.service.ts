@@ -1,4 +1,12 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PasswordException } from 'pdf-parse';
@@ -88,7 +96,10 @@ export interface StatementResultBundle {
 export class StatementService implements OnModuleInit, OnModuleDestroy {
   private uploadsDir = path.join(process.cwd(), 'uploads');
   private readonly logger = new Logger(StatementService.name);
-  private progressStore = new Map<number, { progress: number; stage: string; detail: string }>();
+  private progressStore = new Map<
+    number,
+    { progress: number; stage: string; detail: string }
+  >();
   private readonly pdfExtractor = new PdfTextExtractor();
 
   constructor(private prisma: PrismaService) {
@@ -167,7 +178,8 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     if (!user) throw new NotFoundException('User not found');
 
     const now = new Date();
-    const hasMonthlyCard = user.monthlyCardExpiry != null && user.monthlyCardExpiry > now;
+    const hasMonthlyCard =
+      user.monthlyCardExpiry != null && user.monthlyCardExpiry > now;
 
     if (hasMonthlyCard) {
       // 月卡有效：仅累加 totalQueries，不扣减 remainingQueries
@@ -195,8 +207,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     else if (originalname.includes('支付宝')) source = '支付宝';
     else if (originalname.includes('招商')) source = '招商银行';
     else if (originalname.includes('交通')) source = '交通银行';
-    else if (originalname.includes('工商') || originalname.includes('工行')) source = '工商银行';
-    else if (originalname.includes('农商') || originalname.includes('农村商业')) source = '农商银行';
+    else if (originalname.includes('工商') || originalname.includes('工行'))
+      source = '工商银行';
+    else if (originalname.includes('农商') || originalname.includes('农村商业'))
+      source = '农商银行';
 
     // ③ 写文件 + 立即创建 pending 记录，同步返回 id
     const fileName = `${md5}_${originalname}`;
@@ -226,7 +240,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       let source: string;
       let parsedData: StatementData;
 
-      if (fileName.toLowerCase().endsWith('.xlsx') || fileName.toLowerCase().endsWith('.xls')) {
+      if (
+        fileName.toLowerCase().endsWith('.xlsx') ||
+        fileName.toLowerCase().endsWith('.xls')
+      ) {
         source = '微信';
         this.progressStore.set(recordId, {
           progress: 20,
@@ -249,9 +266,13 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
           detail: '正在读取 PDF 结构...',
         });
 
-        const text = await this.parsePdfText(buffer, password, (progress, stage, detail) => {
-          this.progressStore.set(recordId, { progress, stage, detail });
-        });
+        const text = await this.parsePdfText(
+          buffer,
+          password,
+          (progress, stage, detail) => {
+            this.progressStore.set(recordId, { progress, stage, detail });
+          },
+        );
 
         this.progressStore.set(recordId, {
           progress: 90,
@@ -262,7 +283,9 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         const detected = this.detectSourceFromText(text);
 
         if (!detected) {
-          throw new BadRequestException('不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行或农商银行交易流水。');
+          throw new BadRequestException(
+            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行或农商银行交易流水。',
+          );
         }
 
         source = detected;
@@ -283,7 +306,9 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       });
 
       if (parsedData.transactions.length === 0) {
-        throw new BadRequestException('该账单文件解析出的交易流水为空，可能由于账单内容格式不受支持。目前支持标准的微信、支付宝及主流银行借记卡交易流水。');
+        throw new BadRequestException(
+          '该账单文件解析出的交易流水为空，可能由于账单内容格式不受支持。目前支持标准的微信、支付宝及主流银行借记卡交易流水。',
+        );
       } else {
         this.logger.log(
           `Parsed ${parsedData.transactions.length} transactions for record ${recordId} (${source})`,
@@ -385,7 +410,9 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
           },
           body: JSON.stringify({
             name: parsedData.summary.name,
-            end_of_id: parsedData.summary.idNumber ? parsedData.summary.idNumber.slice(-6) : null,
+            end_of_id: parsedData.summary.idNumber
+              ? parsedData.summary.idNumber.slice(-6)
+              : null,
             first_querior: wechatUser?.nickname,
             first_querior_id: wechatUser?.openid,
           }),
@@ -393,14 +420,20 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
         if (!response.ok) {
           const text = await response.text();
-          this.logger.error(`Failed to send query record to external server: ${response.status} ${text}`);
+          this.logger.error(
+            `Failed to send query record to external server: ${response.status} ${text}`,
+          );
         } else {
-          this.logger.log(`Successfully sent query record for user ${userId} to external server`);
+          this.logger.log(
+            `Successfully sent query record for user ${userId} to external server`,
+          );
         }
       } catch (apiErr) {
-        this.logger.error('Error sending query record to external server:', apiErr);
+        this.logger.error(
+          'Error sending query record to external server:',
+          apiErr,
+        );
       }
-
     } catch (err) {
       if (err instanceof PasswordException) {
         this.logger.warn(`PDF is password protected for record ${recordId}`);
@@ -417,13 +450,15 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         select: { monthlyCardExpiry: true },
       });
       const failNow = new Date();
-      const userHadMonthlyCard = failedUser?.monthlyCardExpiry != null && failedUser.monthlyCardExpiry > failNow;
+      const userHadMonthlyCard =
+        failedUser?.monthlyCardExpiry != null &&
+        failedUser.monthlyCardExpiry > failNow;
       const errorMsg = err instanceof Error ? err.message : String(err);
 
       await Promise.all([
         this.prisma.queryRecord.update({
           where: { id: recordId },
-          data: { 
+          data: {
             status: 'failed',
             summaryJson: { error: errorMsg } as any,
           },
@@ -431,8 +466,11 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         this.prisma.wechatUser.update({
           where: { id: userId },
           data: userHadMonthlyCard
-            ? { totalQueries: { decrement: 1 } }                                       // 月卡用户：只回退计数
-            : { remainingQueries: { increment: 1 }, totalQueries: { decrement: 1 } },  // 普通用户：退还次数
+            ? { totalQueries: { decrement: 1 } } // 月卡用户：只回退计数
+            : {
+                remainingQueries: { increment: 1 },
+                totalQueries: { decrement: 1 },
+              }, // 普通用户：退还次数
         }),
       ]);
     } finally {
@@ -476,7 +514,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       '分析完成后，可生成多维度分类统计图表，方便记账与对账。',
       '系统支持微信、支付宝、招商、交通、工商及顺德农商银行账单。',
       '大体积账单解析可能会消耗较多时间，请耐心等待。',
-      '如果解析失败，请检查账单文件是否完整或密码是否正确。'
+      '如果解析失败，请检查账单文件是否完整或密码是否正确。',
     ];
 
     let error: string | null = null;
@@ -501,19 +539,22 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const records = await this.prisma.queryRecord.findMany({
       where: {
         userId,
-        createdAt: { gte: threeDaysAgo }
+        createdAt: { gte: threeDaysAgo },
       },
       include: { statementUser: true },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
     });
 
-    return records.map(r => {
-      const summaryName = r.summaryJson && typeof r.summaryJson === 'object' ? (r.summaryJson as any).name : undefined;
+    return records.map((r) => {
+      const summaryName =
+        r.summaryJson && typeof r.summaryJson === 'object'
+          ? (r.summaryJson as any).name
+          : undefined;
       return {
         id: r.id,
         source: r.source,
         name: r.statementUser?.name || summaryName || '未知',
-        createdAt: r.createdAt
+        createdAt: r.createdAt,
       };
     });
   }
@@ -538,7 +579,11 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     return { success: true };
   }
 
-  async retryWithPassword(userId: number, recordId: number, password?: string): Promise<void> {
+  async retryWithPassword(
+    userId: number,
+    recordId: number,
+    password?: string,
+  ): Promise<void> {
     const record = await this.prisma.queryRecord.findUnique({
       where: { id: recordId },
     });
@@ -564,7 +609,13 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const buffer = fs.readFileSync(filePath);
     // 异步执行解析，带上密码
     setImmediate(() => {
-      void this.parseAndUpdateRecord(recordId, userId, buffer, path.basename(filePath), password);
+      void this.parseAndUpdateRecord(
+        recordId,
+        userId,
+        buffer,
+        path.basename(filePath),
+        password,
+      );
     });
   }
 
@@ -579,7 +630,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async isOwnerOrAdmin(recordUserId: number, userId: number): Promise<boolean> {
+  private async isOwnerOrAdmin(
+    recordUserId: number,
+    userId: number,
+  ): Promise<boolean> {
     if (recordUserId === userId) return true;
     const requestingUser = await this.prisma.wechatUser.findUnique({
       where: { id: userId },
@@ -602,7 +656,11 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     if (!record) throw new NotFoundException('Record not found');
 
     if (!record.summaryJson || !record.transactionsJson) {
-      return this.backfillLegacyRecord(record.id, record.source, record.filePath);
+      return this.backfillLegacyRecord(
+        record.id,
+        record.source,
+        record.filePath,
+      );
     }
 
     const summary = {
@@ -638,7 +696,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const buffer = fs.readFileSync(filePath);
     let parsedData: StatementData;
 
-    if (fileName.toLowerCase().endsWith('.xlsx') || fileName.toLowerCase().endsWith('.xls')) {
+    if (
+      fileName.toLowerCase().endsWith('.xlsx') ||
+      fileName.toLowerCase().endsWith('.xls')
+    ) {
       parsedData = await this.parseXlsxFile(buffer);
     } else if (fileName.toLowerCase().endsWith('.csv')) {
       parsedData = await this.parseCsvFile(buffer);
@@ -674,16 +735,18 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
     if (result.idNumber) {
       const idNum = result.idNumber;
-      result.maskedIdNumber = idNum.length > 8
-        ? idNum.slice(0, 4) + '*'.repeat(idNum.length - 8) + idNum.slice(-4)
-        : idNum;
+      result.maskedIdNumber =
+        idNum.length > 8
+          ? idNum.slice(0, 4) + '*'.repeat(idNum.length - 8) + idNum.slice(-4)
+          : idNum;
 
       try {
         const idcard = require('idcard');
         const info = idcard.info(idNum);
         if (info && info.valid) {
           result.nativePlace = info.address;
-          result.genderText = info.gender === 'M' ? '男' : info.gender === 'F' ? '女' : '-';
+          result.genderText =
+            info.gender === 'M' ? '男' : info.gender === 'F' ? '女' : '-';
           result.age = info.age;
         }
       } catch (e) {
@@ -693,16 +756,20 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
     if (result.cardNumber) {
       const cardNum = result.cardNumber;
-      result.maskedCardNumber = cardNum.length > 8
-        ? cardNum.slice(0, 4) + '*'.repeat(cardNum.length - 8) + cardNum.slice(-4)
-        : cardNum;
+      result.maskedCardNumber =
+        cardNum.length > 8
+          ? cardNum.slice(0, 4) +
+            '*'.repeat(cardNum.length - 8) +
+            cardNum.slice(-4)
+          : cardNum;
     }
 
     if (result.phoneNumber) {
       const phone = result.phoneNumber;
-      result.maskedPhoneNumber = phone.length > 7
-        ? phone.slice(0, 3) + '*'.repeat(phone.length - 7) + phone.slice(-4)
-        : phone;
+      result.maskedPhoneNumber =
+        phone.length > 7
+          ? phone.slice(0, 3) + '*'.repeat(phone.length - 7) + phone.slice(-4)
+          : phone;
     }
 
     return result;
@@ -758,7 +825,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async getRiskStatus(id: number, userId: number): Promise<{ isHighRisk: boolean }> {
+  async getRiskStatus(
+    id: number,
+    userId: number,
+  ): Promise<{ isHighRisk: boolean }> {
     await this.assertRecordOwnership(id, userId);
     const record = await this.prisma.queryRecord.findUnique({
       where: { id },
@@ -803,7 +873,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       firstQueryTime = record.createdAt;
     }
 
-    const classifiedTransactions = await this.classifyTransactionsForUser(userId, data.transactions);
+    const classifiedTransactions = await this.classifyTransactionsForUser(
+      userId,
+      data.transactions,
+    );
 
     return {
       summary: {
@@ -818,10 +891,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
   async getCounterparties(id: number, userId: number) {
     await this.assertRecordOwnership(id, userId);
     const data = await this.getPersistedData(id);
-    const map = new Map<string, { count: number, total: number }>();
+    const map = new Map<string, { count: number; total: number }>();
     let grandTotal = 0;
 
-    data.transactions.forEach(t => {
+    data.transactions.forEach((t) => {
       if (t.type !== '不计收支') {
         const entry = map.get(t.counterparty) || { count: 0, total: 0 };
         entry.count++;
@@ -835,7 +908,8 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       name,
       count: stats.count,
       amount: stats.total,
-      percentage: grandTotal > 0 ? ((stats.total / grandTotal) * 100).toFixed(2) : '0.00'
+      percentage:
+        grandTotal > 0 ? ((stats.total / grandTotal) * 100).toFixed(2) : '0.00',
     }));
 
     result.sort((a, b) => b.amount - a.amount);
@@ -855,7 +929,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
 
     const oldRecords = await this.prisma.queryRecord.findMany({
-      where: { createdAt: { lt: sixtyDaysAgo } }
+      where: { createdAt: { lt: sixtyDaysAgo } },
     });
 
     for (const record of oldRecords) {
@@ -866,7 +940,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.prisma.queryRecord.deleteMany({
-      where: { createdAt: { lt: sixtyDaysAgo } }
+      where: { createdAt: { lt: sixtyDaysAgo } },
     });
     this.logger.debug(`Cleaned up ${oldRecords.length} old records.`);
   }
@@ -925,13 +999,21 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         name = nameMatch[1];
         idNumber = nameMatch[2];
       }
-      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-      let txs: string[][] = [];
+      const lines = text
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const txs: string[][] = [];
       let currentTx: string[] = [];
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        if (line.startsWith('支出 ') || line.startsWith('收入 ') || line === '不计' || line.startsWith('不计 ')) {
+        if (
+          line.startsWith('支出 ') ||
+          line.startsWith('收入 ') ||
+          line === '不计' ||
+          line.startsWith('不计 ')
+        ) {
           if (currentTx.length > 0) txs.push(currentTx);
           currentTx = [line];
         } else {
@@ -953,20 +1035,31 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
         const amount = parseFloat(amountMatch[1]);
 
-        const dateMatch = fullText.match(/(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}:\d{2}:\d{2}))?/);
+        const dateMatch = fullText.match(
+          /(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}:\d{2}:\d{2}))?/,
+        );
         if (!dateMatch) continue;
 
-        const date = dateMatch[2] ? `${dateMatch[1]} ${dateMatch[2]}` : dateMatch[1];
+        const date = dateMatch[2]
+          ? `${dateMatch[1]} ${dateMatch[2]}`
+          : dateMatch[1];
         const month = dateMatch[1].substring(0, 7);
 
-        const counterparty = fullText.substring(typeMatch[0].length).trim().split(/\s+/)[0] || '支付宝商户';
+        const counterparty =
+          fullText.substring(typeMatch[0].length).trim().split(/\s+/)[0] ||
+          '支付宝商户';
 
         const startIdx = fullText.indexOf(counterparty) + counterparty.length;
         const endIdx = fullText.indexOf(amountMatch[0]);
         let product = '';
         if (startIdx >= 0 && endIdx > startIdx) {
           product = fullText.substring(startIdx, endIdx).trim();
-          product = product.replace(/(?:招商银行|交通银行|工商银行|建设银行|农业银行|中国银行|邮储银行|中信银行|光大银行|华夏银行|民生银行|广发银行|深发银行|招商|交行|工行|建行|农行|中行|网商银行|网商|花呗|余额宝|账户余额|余额|红包|储蓄卡|信用卡|借记卡)\(?[0-9]*\)?&?/g, '').trim();
+          product = product
+            .replace(
+              /(?:招商银行|交通银行|工商银行|建设银行|农业银行|中国银行|邮储银行|中信银行|光大银行|华夏银行|民生银行|广发银行|深发银行|招商|交行|工行|建行|农行|中行|网商银行|网商|花呗|余额宝|账户余额|余额|红包|储蓄卡|信用卡|借记卡)\(?[0-9]*\)?&?/g,
+              '',
+            )
+            .trim();
         }
 
         transactions.push({ date, month, type, amount, counterparty, product });
@@ -980,7 +1073,9 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       if (cardMatch) {
         cardNumber = cardMatch[1];
       }
-      const rangeMatch = text.match(/(\d{4}-\d{2}-\d{2})\s*--\s*(\d{4}-\d{2}-\d{2})/);
+      const rangeMatch = text.match(
+        /(\d{4}-\d{2}-\d{2})\s*--\s*(\d{4}-\d{2}-\d{2})/,
+      );
       if (rangeMatch) {
         startDate = rangeMatch[1];
         endDate = rangeMatch[2];
@@ -1014,13 +1109,18 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       if (cardMatch) {
         cardNumber = cardMatch[1];
       }
-      const rangeMatch = text.match(/起止日期：(\d{4}-\d{2}-\d{2})\s*—\s*(\d{4}-\d{2}-\d{2})/);
+      const rangeMatch = text.match(
+        /起止日期：(\d{4}-\d{2}-\d{2})\s*—\s*(\d{4}-\d{2}-\d{2})/,
+      );
       if (rangeMatch) {
         startDate = rangeMatch[1];
         endDate = rangeMatch[2];
       }
 
-      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      const lines = text
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
       let currentDate = '';
 
       for (let i = 0; i < lines.length; i++) {
@@ -1032,7 +1132,9 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
         const timeMatch = line.match(/^(\d{2}:\d{2}:\d{2})/);
         if (timeMatch && currentDate) {
-          const match = line.match(/^(\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+([+-][0-9,]+\.[0-9]{2})\s+([0-9,]+\.[0-9]{2})\s*(.*?)$/);
+          const match = line.match(
+            /^(\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+([+-][0-9,]+\.[0-9]{2})\s+([0-9,]+\.[0-9]{2})\s*(.*?)$/,
+          );
           if (match) {
             const time = match[1];
             const date = `${currentDate} ${time}`;
@@ -1064,7 +1166,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         endDate = rangeMatch[2];
       }
 
-      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      const lines = text
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
       const blocks: Array<{ date: string; lines: string[] }> = [];
       let currentBlock: { date: string; lines: string[] } | null = null;
 
@@ -1077,14 +1182,24 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
             if (currentBlock) blocks.push(currentBlock);
             currentBlock = {
               date: line,
-              lines: []
+              lines: [],
             };
             continue;
           }
         }
 
         if (currentBlock) {
-          if (line.includes('广东顺德农村商业银行') || line.includes('账户/卡明细信息') || line.includes('起止日期') || line.includes('交易时间') || line.startsWith('————') || line.startsWith('累计存入笔数') || line.startsWith('总交易笔数') || line.startsWith('END') || line.startsWith('打印机构')) {
+          if (
+            line.includes('广东顺德农村商业银行') ||
+            line.includes('账户/卡明细信息') ||
+            line.includes('起止日期') ||
+            line.includes('交易时间') ||
+            line.startsWith('————') ||
+            line.startsWith('累计存入笔数') ||
+            line.startsWith('总交易笔数') ||
+            line.startsWith('END') ||
+            line.startsWith('打印机构')
+          ) {
             continue;
           }
           currentBlock.lines.push(line);
@@ -1096,7 +1211,9 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         const dateOnly = block.date;
         const blockText = block.lines.join(' ');
 
-        const match = blockText.match(/^(\d{2}:\d{2}:\d{2})\s+(\S+)\s+([+-][0-9,]+\.[0-9]{2})\s+(.*?)$/);
+        const match = blockText.match(
+          /^(\d{2}:\d{2}:\d{2})\s+(\S+)\s+([+-][0-9,]+\.[0-9]{2})\s+(.*?)$/,
+        );
         if (match) {
           const time = match[1];
           const date = `${dateOnly} ${time}`;
@@ -1107,7 +1224,9 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
           const amount = Math.abs(amountNum);
           const remainder = match[4].trim();
 
-          const balanceMatch = remainder.match(/\s([0-9,]+\.[0-9]{2})\s+(\S+渠道|核心渠道|网上渠道|快捷渠道|自助渠道|柜面渠道|其他渠道)\s+(\S+)\s*(.*?)$/);
+          const balanceMatch = remainder.match(
+            /\s([0-9,]+\.[0-9]{2})\s+(\S+渠道|核心渠道|网上渠道|快捷渠道|自助渠道|柜面渠道|其他渠道)\s+(\S+)\s*(.*?)$/,
+          );
 
           let counterparty = '';
           if (balanceMatch) {
@@ -1115,8 +1234,13 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
             const channel = balanceMatch[2];
             const summary = balanceMatch[3];
             const memo = balanceMatch[4];
-            const opponentText = remainder.substring(0, remainder.indexOf(balanceMatch[0])).trim();
-            const nameAndBank = opponentText.replace(/\b\d+(\s+\d+)?\b/g, '').trim().replace(/\s+/g, ' ');
+            const opponentText = remainder
+              .substring(0, remainder.indexOf(balanceMatch[0]))
+              .trim();
+            const nameAndBank = opponentText
+              .replace(/\b\d+(\s+\d+)?\b/g, '')
+              .trim()
+              .replace(/\s+/g, ' ');
 
             counterparty = nameAndBank || opponentText || summary;
             if (channel && channel !== '核心渠道') {
@@ -1134,9 +1258,11 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
     transactions.sort((a, b) => a.date.localeCompare(b.date));
     if (transactions.length > 0) {
-      const toDateOnly = (d: string) => (d.length >= 10 ? d.substring(0, 10) : d);
+      const toDateOnly = (d: string) =>
+        d.length >= 10 ? d.substring(0, 10) : d;
       if (!startDate) startDate = toDateOnly(transactions[0].date);
-      if (!endDate) endDate = toDateOnly(transactions[transactions.length - 1].date);
+      if (!endDate)
+        endDate = toDateOnly(transactions[transactions.length - 1].date);
     }
 
     // 按降序排列记录
@@ -1147,13 +1273,21 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     let selfIncome = 0;
     let selfExpenditure = 0;
 
-    transactions.forEach(t => {
+    transactions.forEach((t) => {
       if (t.type === '收入') {
         totalIncome += t.amount;
-        if (t.counterparty.includes(name) || t.counterparty.includes('转入到余利宝')) selfIncome += t.amount;
+        if (
+          t.counterparty.includes(name) ||
+          t.counterparty.includes('转入到余利宝')
+        )
+          selfIncome += t.amount;
       } else if (t.type === '支出') {
         totalExpenditure += t.amount;
-        if (t.counterparty.includes(name) || t.counterparty.includes('转入到余利宝')) selfExpenditure += t.amount;
+        if (
+          t.counterparty.includes(name) ||
+          t.counterparty.includes('转入到余利宝')
+        )
+          selfExpenditure += t.amount;
       }
     });
 
@@ -1163,8 +1297,20 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     selfExpenditure = Number(selfExpenditure.toFixed(2));
 
     return {
-      summary: { id: '', source, name, idNumber, cardNumber, startDate, endDate, totalIncome, totalExpenditure, selfIncome, selfExpenditure },
-      transactions
+      summary: {
+        id: '',
+        source,
+        name,
+        idNumber,
+        cardNumber,
+        startDate,
+        endDate,
+        totalIncome,
+        totalExpenditure,
+        selfIncome,
+        selfExpenditure,
+      },
+      transactions,
     };
   }
 
@@ -1209,7 +1355,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
   }
 
   private parseCmbTransactions(text: string): Transaction[] {
-    const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+    const lines = text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
     const mergedLines: string[] = [];
 
     let i = 0;
@@ -1224,7 +1373,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       i++;
       while (i < lines.length) {
         const next = lines[i];
-        if (this.isCmbTransactionLine(next) || this.shouldSkipCmbNoiseLine(next)) {
+        if (
+          this.isCmbTransactionLine(next) ||
+          this.shouldSkipCmbNoiseLine(next)
+        ) {
           break;
         }
         merged += next;
@@ -1338,7 +1490,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
   private parseWechatTransactions(text: string): Transaction[] {
     const transactions: Transaction[] = [];
-    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    const lines = text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
 
     // 1. Find all transaction anchors (ID start index, date index, time index)
     const anchors: Array<{
@@ -1352,7 +1507,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
     for (let idx = 0; idx < lines.length; idx++) {
       if (/^\d{4}-\d{2}-\d{2}$/.test(lines[idx])) {
-        if (idx + 1 < lines.length && /^\d{2}:\d{2}:\d{2}$/.test(lines[idx + 1])) {
+        if (
+          idx + 1 < lines.length &&
+          /^\d{2}:\d{2}:\d{2}$/.test(lines[idx + 1])
+        ) {
           const txDate = lines[idx];
           const txTime = lines[idx + 1];
 
@@ -1371,14 +1529,14 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
           // Validate transaction ID matches the date (allowing 1 day tolerance)
           const isMatchedId = this.validateWechatTxId(combinedId, txDate);
-          
+
           anchors.push({
             idStartIdx: isMatchedId ? idStartIdx : idx,
             dateIdx: idx,
             timeIdx: idx + 1,
             date: txDate,
             time: txTime,
-            transactionId: isMatchedId ? combinedId : ''
+            transactionId: isMatchedId ? combinedId : '',
           });
         }
       }
@@ -1394,7 +1552,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       const rawBlockLines = lines.slice(anchor.timeIdx + 1, blockEndIdx);
 
       // Filter out footer/header noise
-      const blockLines = rawBlockLines.filter(line => {
+      const blockLines = rawBlockLines.filter((line) => {
         if (line.startsWith('-- ')) return false;
         if (line.includes('微信支付交易明细证明')) return false;
         if (line.includes('兹证明')) return false;
@@ -1405,13 +1563,15 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       });
 
       const blockText = blockLines.join(' ');
-      const amountLineIdx = blockLines.findIndex(l => /\d+\.\d{2}/.test(l));
+      const amountLineIdx = blockLines.findIndex((l) => /\d+\.\d{2}/.test(l));
 
       if (amountLineIdx >= 0) {
         const amountLine = blockLines[amountLineIdx];
         const hasOther = /(?:^|\s|\/)其他(?:\s|\/|$)/.test(blockText);
-        const hasIncome = /\s收入(?:\s|\/)/.test(amountLine) || /\s收入\s/.test(blockText);
-        const hasExpense = /\s支出\s/.test(amountLine) || /\s支出\s/.test(blockText);
+        const hasIncome =
+          /\s收入(?:\s|\/)/.test(amountLine) || /\s收入\s/.test(blockText);
+        const hasExpense =
+          /\s支出\s/.test(amountLine) || /\s支出\s/.test(blockText);
         const isOtherType = hasOther && !hasIncome && !hasExpense;
 
         let type: '收入' | '支出' | '不计收支' = '支出';
@@ -1440,13 +1600,23 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
             product = blockLines.slice(0, amountLineIdx).join('').trim();
             counterparty = this.extractWechatCounterparty(
               amountLine
-                .slice(amountLine.indexOf(amountMatch[0]) + amountMatch[0].length)
+                .slice(
+                  amountLine.indexOf(amountMatch[0]) + amountMatch[0].length,
+                )
                 .trim(),
               blockLines.slice(amountLineIdx + 1),
             );
           }
 
-          transactions.push({ date: dateTime, month, type, amount, counterparty, bizType, product });
+          transactions.push({
+            date: dateTime,
+            month,
+            type,
+            amount,
+            counterparty,
+            bizType,
+            product,
+          });
         }
       }
     }
@@ -1469,7 +1639,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       dates.push(next.toISOString().split('T')[0]);
     }
 
-    return dates.some(dt => {
+    return dates.some((dt) => {
       const yyyymmdd = dt.replace(/-/g, '');
       const yymmdd = yyyymmdd.substring(2);
       return id.includes(yyyymmdd) || id.includes(yymmdd);
@@ -1481,11 +1651,16 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     if (match) {
       return match[1].replace(/\s+/g, '').trim();
     }
-    const fallback = amountLine.match(/^(商户消费|微信红包(?:\(单发\))?|转账|扫二维码付款|二维码收款|零钱通|提现|退款)/);
+    const fallback = amountLine.match(
+      /^(商户消费|微信红包(?:\(单发\))?|转账|扫二维码付款|二维码收款|零钱通|提现|退款)/,
+    );
     return fallback ? fallback[1].replace(/\s+/g, '').trim() : '';
   }
 
-  private extractWechatCounterparty(sameLine: string, nextLines: string[]): string {
+  private extractWechatCounterparty(
+    sameLine: string,
+    nextLines: string[],
+  ): string {
     const parts: string[] = [];
 
     // Process the same line as the amount — split by whitespace, stop at first merchant-ID token
@@ -1514,7 +1689,11 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
   }
 
   // --- Dynamic Classification Engine ---
-  async saveUserCustomCategory(userId: number, counterparty: string, category: string) {
+  async saveUserCustomCategory(
+    userId: number,
+    counterparty: string,
+    category: string,
+  ) {
     return this.prisma.userCustomCategory.upsert({
       where: {
         userId_counterparty: {
@@ -1545,10 +1724,19 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       distinct: ['category'],
       select: { category: true },
     });
-    
-    const dbSet = new Set(dbCategories.map(c => c.category));
-    const coreCategories = ['餐饮', '购物', '交通', '娱乐', '服务', '转账', '收入', '其他'];
-    
+
+    const dbSet = new Set(dbCategories.map((c) => c.category));
+    const coreCategories = [
+      '餐饮',
+      '购物',
+      '交通',
+      '娱乐',
+      '服务',
+      '转账',
+      '收入',
+      '其他',
+    ];
+
     const allCategories = [...coreCategories];
     for (const cat of dbSet) {
       if (cat && !allCategories.includes(cat)) {
@@ -1560,11 +1748,14 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         }
       }
     }
-    
+
     return allCategories;
   }
 
-  async classifyTransactionsForUser(userId: number, transactions: Transaction[]): Promise<Transaction[]> {
+  async classifyTransactionsForUser(
+    userId: number,
+    transactions: Transaction[],
+  ): Promise<Transaction[]> {
     // 1. Fetch user custom categories
     const userCustomList = await this.prisma.userCustomCategory.findMany({
       where: { userId },
@@ -1575,7 +1766,8 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
 
     // 2. Fetch global keywords
-    const globalKeywordsList = await this.prisma.globalCategoryKeyword.findMany();
+    const globalKeywordsList =
+      await this.prisma.globalCategoryKeyword.findMany();
 
     const globalKeywordsMap = new Map<string, string[]>();
     for (const gk of globalKeywordsList) {
@@ -1585,8 +1777,12 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
 
     // 3. Classify transactions
-    return transactions.map(t => {
-      const category = this.determineCategory(t, userCustomMap, globalKeywordsMap);
+    return transactions.map((t) => {
+      const category = this.determineCategory(
+        t,
+        userCustomMap,
+        globalKeywordsMap,
+      );
       return {
         ...t,
         category,
@@ -1616,9 +1812,14 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
 
     // 3. Transfer rule
-    const isTransferType = bizType === '转账' || bizType.includes('转账') || bizType.includes('朋友转账');
+    const isTransferType =
+      bizType === '转账' ||
+      bizType.includes('转账') ||
+      bizType.includes('朋友转账');
     const transferKeywords = globalKeywordsMap.get('转账') || [];
-    const matchesTransferKeyword = transferKeywords.some(kw => combined.includes(kw));
+    const matchesTransferKeyword = transferKeywords.some((kw) =>
+      combined.includes(kw),
+    );
 
     if (isTransferType || matchesTransferKeyword) {
       return '转账';
@@ -1628,7 +1829,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const categories = ['餐饮', '购物', '交通', '娱乐', '服务'];
     for (const cat of categories) {
       const kws = globalKeywordsMap.get(cat) || [];
-      if (kws.some(kw => combined.includes(kw) || bizType.includes(kw))) {
+      if (kws.some((kw) => combined.includes(kw) || bizType.includes(kw))) {
         return cat;
       }
     }
@@ -1662,7 +1863,9 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
           }
         }
         if (firstCellVal.includes('起始时间：')) {
-          const rangeMatch = firstCellVal.match(/起始时间：\[?(.*?)\]?\s+终止时间：\[?(.*?)\]?$/);
+          const rangeMatch = firstCellVal.match(
+            /起始时间：\[?(.*?)\]?\s+终止时间：\[?(.*?)\]?$/,
+          );
           if (rangeMatch) {
             const startClean = rangeMatch[1].replace(/^\[|\]$/g, '');
             const endClean = rangeMatch[2].replace(/^\[|\]$/g, '');
@@ -1677,7 +1880,9 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (headerRowIndex === -1) {
-      throw new BadRequestException('未能在 Excel 文件中找到包含“交易时间”的表头行');
+      throw new BadRequestException(
+        '未能在 Excel 文件中找到包含“交易时间”的表头行',
+      );
     }
 
     // 动态映射列
@@ -1697,14 +1902,20 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    const formatWechatExcelDate = (cellVal: any): { dateStr: string; monthStr: string } => {
+    const formatWechatExcelDate = (
+      cellVal: any,
+    ): { dateStr: string; monthStr: string } => {
       let dateObj: Date;
       if (cellVal instanceof Date) {
         dateObj = cellVal;
       } else if (typeof cellVal === 'string') {
         dateObj = new Date(cellVal);
-      } else if (cellVal && typeof cellVal === 'object' && (cellVal as any).result instanceof Date) {
-        dateObj = (cellVal as any).result;
+      } else if (
+        cellVal &&
+        typeof cellVal === 'object' &&
+        cellVal.result instanceof Date
+      ) {
+        dateObj = cellVal.result;
       } else {
         return { dateStr: '', monthStr: '' };
       }
@@ -1739,10 +1950,18 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       const { dateStr, monthStr } = formatWechatExcelDate(dateCellVal);
       if (!dateStr) continue;
 
-      const bizType = String(row.getCell(colMap['交易类型'] || 2).value || '').trim();
-      const counterparty = String(row.getCell(colMap['交易对方'] || 3).value || '未知').trim();
-      const product = String(row.getCell(colMap['商品'] || 4).value || '').trim();
-      const typeStr = String(row.getCell(colMap['收/支'] || 5).value || '').trim();
+      const bizType = String(
+        row.getCell(colMap['交易类型'] || 2).value || '',
+      ).trim();
+      const counterparty = String(
+        row.getCell(colMap['交易对方'] || 3).value || '未知',
+      ).trim();
+      const product = String(
+        row.getCell(colMap['商品'] || 4).value || '',
+      ).trim();
+      const typeStr = String(
+        row.getCell(colMap['收/支'] || 5).value || '',
+      ).trim();
 
       let type: '收入' | '支出' | '不计收支' = '不计收支';
       if (typeStr === '收入') type = '收入';
@@ -1764,10 +1983,11 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
     // 按交易时间排序
     transactions.sort((a, b) => a.date.localeCompare(b.date));
-    
+
     if (transactions.length > 0) {
       if (!startDate) startDate = transactions[0].date.substring(0, 10);
-      if (!endDate) endDate = transactions[transactions.length - 1].date.substring(0, 10);
+      if (!endDate)
+        endDate = transactions[transactions.length - 1].date.substring(0, 10);
     }
 
     // 倒序排列（新交易在最上面）
@@ -1781,10 +2001,18 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     transactions.forEach((t) => {
       if (t.type === '收入') {
         totalIncome += t.amount;
-        if (t.counterparty.includes(name) || t.counterparty.includes('转入到余利宝')) selfIncome += t.amount;
+        if (
+          t.counterparty.includes(name) ||
+          t.counterparty.includes('转入到余利宝')
+        )
+          selfIncome += t.amount;
       } else if (t.type === '支出') {
         totalExpenditure += t.amount;
-        if (t.counterparty.includes(name) || t.counterparty.includes('转入到余利宝')) selfExpenditure += t.amount;
+        if (
+          t.counterparty.includes(name) ||
+          t.counterparty.includes('转入到余利宝')
+        )
+          selfExpenditure += t.amount;
       }
     });
 
@@ -1852,7 +2080,11 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     try {
       const decoder = new TextDecoder('gbk');
       text = decoder.decode(buffer);
-      if (!text.includes('特别提示') && !text.includes('支付宝') && !text.includes('记录时间')) {
+      if (
+        !text.includes('特别提示') &&
+        !text.includes('支付宝') &&
+        !text.includes('记录时间')
+      ) {
         const utf8Decoder = new TextDecoder('utf-8');
         text = utf8Decoder.decode(buffer);
       }
@@ -1863,15 +2095,20 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
     // Check if it is Alipay Cashbook and reject it
     if (
-      text.includes('本记账单内容可表明') || 
-      text.includes('记录时间,分类,收支类型') || 
+      text.includes('本记账单内容可表明') ||
+      text.includes('记录时间,分类,收支类型') ||
       text.includes('支付宝受理了相应记账明细申请')
     ) {
-      throw new BadRequestException('暂不支持解析支付宝记账本流水，请上传正确的支付宝交易明细CSV文件。');
+      throw new BadRequestException(
+        '暂不支持解析支付宝记账本流水，请上传正确的支付宝交易明细CSV文件。',
+      );
     }
 
-    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
     let name = '匿名';
     let phoneNumber = '';
     let startDate = '';
@@ -1895,8 +2132,13 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         }
       }
       if (line.includes('起始时间：') || line.includes('起始时间:')) {
-        const rangeMatch = line.match(/(?:起始时间)：\s*\[?(.*?)\]?\s+(?:终止时间)：\s*\[?(.*?)\]?$/) 
-                        || line.match(/(?:起始时间):\s*\[?(.*?)\]?\s+(?:终止时间):\s*\[?(.*?)\]?$/);
+        const rangeMatch =
+          line.match(
+            /(?:起始时间)：\s*\[?(.*?)\]?\s+(?:终止时间)：\s*\[?(.*?)\]?$/,
+          ) ||
+          line.match(
+            /(?:起始时间):\s*\[?(.*?)\]?\s+(?:终止时间):\s*\[?(.*?)\]?$/,
+          );
         if (rangeMatch) {
           const startClean = rangeMatch[1].replace(/^\[|\]$/g, '');
           const endClean = rangeMatch[2].replace(/^\[|\]$/g, '');
@@ -1904,14 +2146,20 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
           endDate = endClean.split(' ')[0];
         }
       }
-      if (line.includes('交易时间') && line.includes('金额') && (line.includes('收/支') || line.includes('收支'))) {
+      if (
+        line.includes('交易时间') &&
+        line.includes('金额') &&
+        (line.includes('收/支') || line.includes('收支'))
+      ) {
         headerIndex = i;
         break;
       }
     }
 
     if (headerIndex === -1) {
-      throw new BadRequestException('未能在 CSV 文件中找到包含“交易时间”与“金额”的表头行');
+      throw new BadRequestException(
+        '未能在 CSV 文件中找到包含“交易时间”与“金额”的表头行',
+      );
     }
 
     const headerRow = lines[headerIndex];
@@ -1919,21 +2167,50 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const colMap: { [key: string]: number } = {};
     headers.forEach((h, colNumber) => {
       const cleanVal = h.trim();
-      if (cleanVal === '交易时间' || cleanVal === '记录时间' || cleanVal === '时间') {
+      if (
+        cleanVal === '交易时间' ||
+        cleanVal === '记录时间' ||
+        cleanVal === '时间'
+      ) {
         colMap['交易时间'] = colNumber;
-      } else if (cleanVal === '收/支' || cleanVal === '收支' || cleanVal === '收支类型') {
+      } else if (
+        cleanVal === '收/支' ||
+        cleanVal === '收支' ||
+        cleanVal === '收支类型'
+      ) {
         colMap['收/支'] = colNumber;
-      } else if (cleanVal === '金额' || cleanVal === '金额(元)' || cleanVal === '金额（元）') {
+      } else if (
+        cleanVal === '金额' ||
+        cleanVal === '金额(元)' ||
+        cleanVal === '金额（元）'
+      ) {
         colMap['金额(元)'] = colNumber;
-      } else if (cleanVal === '交易对方' || cleanVal === '商户' || cleanVal === '对方') {
+      } else if (
+        cleanVal === '交易对方' ||
+        cleanVal === '商户' ||
+        cleanVal === '对方'
+      ) {
         colMap['交易对方'] = colNumber;
-      } else if (cleanVal === '商品说明' || cleanVal === '商品' || cleanVal === '商品名称') {
+      } else if (
+        cleanVal === '商品说明' ||
+        cleanVal === '商品' ||
+        cleanVal === '商品名称'
+      ) {
         colMap['商品'] = colNumber;
-      } else if (cleanVal === '交易分类' || cleanVal === '分类' || cleanVal === '交易类型') {
+      } else if (
+        cleanVal === '交易分类' ||
+        cleanVal === '分类' ||
+        cleanVal === '交易类型'
+      ) {
         colMap['交易类型'] = colNumber;
       } else if (cleanVal === '备注') {
         colMap['备注'] = colNumber;
-      } else if (cleanVal === '收/付款方式' || cleanVal === '账户' || cleanVal === '资金渠道' || cleanVal === '付款方式') {
+      } else if (
+        cleanVal === '收/付款方式' ||
+        cleanVal === '账户' ||
+        cleanVal === '资金渠道' ||
+        cleanVal === '付款方式'
+      ) {
         colMap['支付方式'] = colNumber;
       }
     });
@@ -1967,7 +2244,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       const amount = parseFloat(amountStr) || 0;
 
       let counterparty = getVal(cells, '交易对方');
-      let product = getVal(cells, '商品') || getVal(cells, '备注') || '';
+      const product = getVal(cells, '商品') || getVal(cells, '备注') || '';
 
       if (!counterparty) {
         counterparty = '支付宝商户';
@@ -1986,10 +2263,11 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
     // 按交易时间排序
     transactions.sort((a, b) => a.date.localeCompare(b.date));
-    
+
     if (transactions.length > 0) {
       if (!startDate) startDate = transactions[0].date.substring(0, 10);
-      if (!endDate) endDate = transactions[transactions.length - 1].date.substring(0, 10);
+      if (!endDate)
+        endDate = transactions[transactions.length - 1].date.substring(0, 10);
     }
 
     // 倒序排列（新交易在最上面）
@@ -2003,10 +2281,20 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     transactions.forEach((t) => {
       if (t.type === '收入') {
         totalIncome += t.amount;
-        if (t.counterparty.includes(name) || t.counterparty.includes('转入到余利宝') || t.counterparty.includes('余额宝')) selfIncome += t.amount;
+        if (
+          t.counterparty.includes(name) ||
+          t.counterparty.includes('转入到余利宝') ||
+          t.counterparty.includes('余额宝')
+        )
+          selfIncome += t.amount;
       } else if (t.type === '支出') {
         totalExpenditure += t.amount;
-        if (t.counterparty.includes(name) || t.counterparty.includes('转入到余利宝') || t.counterparty.includes('余额宝')) selfExpenditure += t.amount;
+        if (
+          t.counterparty.includes(name) ||
+          t.counterparty.includes('转入到余利宝') ||
+          t.counterparty.includes('余额宝')
+        )
+          selfExpenditure += t.amount;
       }
     });
 
@@ -2034,5 +2322,3 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     };
   }
 }
-
-
