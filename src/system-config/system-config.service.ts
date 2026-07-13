@@ -131,7 +131,7 @@ export class SystemConfigService {
   async getUserOrSystemAiPrompt(userId: number): Promise<string> {
     const user = await this.prisma.wechatUser.findUnique({
       where: { id: userId },
-      select: { level: true },
+      select: { level: true, totalQueries: true },
     });
     const isAdmin = user?.level === 999;
 
@@ -140,9 +140,12 @@ export class SystemConfigService {
         await this.prisma.systemConfig.findUnique({
           where: { key: 'enable_custom_prompt' },
         });
-      const enableCustomPrompt = enableCustomPromptConfig
+      const enableCustomPromptSwitch = enableCustomPromptConfig
         ? enableCustomPromptConfig.value === 'true'
         : false;
+
+      const userTotalQueries = user?.totalQueries || 0;
+      const enableCustomPrompt = enableCustomPromptSwitch && userTotalQueries > 10;
 
       if (!enableCustomPrompt) {
         return this.getAiSystemPrompt();
@@ -161,16 +164,19 @@ export class SystemConfigService {
   async getUserAiPromptDetail(userId: number) {
     const user = await this.prisma.wechatUser.findUnique({
       where: { id: userId },
-      select: { level: true },
+      select: { level: true, totalQueries: true },
     });
     const isAdmin = user?.level === 999;
+    const userTotalQueries = user?.totalQueries || 0;
 
     const enableCustomPromptConfig = await this.prisma.systemConfig.findUnique({
       where: { key: 'enable_custom_prompt' },
     });
-    const enableCustomPrompt = enableCustomPromptConfig
+    const enableCustomPromptSwitch = enableCustomPromptConfig
       ? enableCustomPromptConfig.value === 'true'
       : false;
+
+    const enableCustomPrompt = isAdmin || (enableCustomPromptSwitch && userTotalQueries > 10);
 
     if (isAdmin) {
       const adminPrompt = await this.getAdminAiSystemPrompt();
@@ -179,6 +185,7 @@ export class SystemConfigService {
         isDefault: adminPrompt.isDefault,
         isAdmin: true,
         enableCustomPrompt,
+        totalQueries: userTotalQueries,
       };
     }
 
@@ -188,6 +195,7 @@ export class SystemConfigService {
         isDefault: true,
         isAdmin: false,
         enableCustomPrompt: false,
+        totalQueries: userTotalQueries,
       };
     }
 
@@ -200,6 +208,7 @@ export class SystemConfigService {
       isDefault: !stored,
       isAdmin: false,
       enableCustomPrompt,
+      totalQueries: userTotalQueries,
     };
   }
 
