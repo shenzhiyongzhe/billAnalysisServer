@@ -18,7 +18,7 @@ model WechatUser {
   level            Int      @default(1)
   monthlyCardExpiry DateTime? // 月卡到期时间，null 表示无月卡
   lastLoginAt      DateTime? // 最近登录/发 token 时间
-  lastLoginIp      String?   // 最近登录 IP，例如 "1.2.3.4"
+  lastLoginIp      String?   @db.VarChar(45) // 最近登录 IP，例如 "1.2.3.4" / IPv6
   records          QueryRecord[]
   session          UserSession?
   shareRecords     ShareRecord[] @relation("SharerRelation")
