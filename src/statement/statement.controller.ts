@@ -25,14 +25,16 @@ export class StatementController {
   async uploadFile(
     @UploadedFile() file: Express.Multer.File,
     @CurrentUserId() userId: number,
+    @Body('fileName') fileName?: string,
   ) {
     if (!file) {
       throw new BadRequestException('No file uploaded');
     }
+    const name = fileName || file.originalname;
     const result = await this.statementService.processAndSaveFile(
       userId,
       file.buffer,
-      file.originalname,
+      name,
     );
     return { id: result.id, isDuplicate: result.isDuplicate };
   }
