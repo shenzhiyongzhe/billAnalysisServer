@@ -222,7 +222,7 @@ export class SystemConfigService {
 
     const user = await this.prisma.wechatUser.findUnique({
       where: { id: userId },
-      select: { level: true },
+      select: { level: true, totalQueries: true },
     });
     const isAdmin = user?.level === 999;
 
@@ -233,12 +233,13 @@ export class SystemConfigService {
     const enableCustomPromptConfig = await this.prisma.systemConfig.findUnique({
       where: { key: 'enable_custom_prompt' },
     });
-    const enableCustomPrompt = enableCustomPromptConfig
+    const enableCustomPromptSwitch = enableCustomPromptConfig
       ? enableCustomPromptConfig.value === 'true'
       : false;
 
-    if (!enableCustomPrompt) {
-      throw new BadRequestException('自定义提示词功能已被禁用');
+    const userTotalQueries = user?.totalQueries || 0;
+    if (!enableCustomPromptSwitch || userTotalQueries <= 10) {
+      throw new BadRequestException('自定义提示词功能已被禁用或未满足使用条件');
     }
 
     await this.prisma.userPromptTemplate.upsert({
@@ -253,7 +254,7 @@ export class SystemConfigService {
   async resetUserAiPrompt(userId: number) {
     const user = await this.prisma.wechatUser.findUnique({
       where: { id: userId },
-      select: { level: true },
+      select: { level: true, totalQueries: true },
     });
     const isAdmin = user?.level === 999;
 
@@ -264,12 +265,13 @@ export class SystemConfigService {
     const enableCustomPromptConfig = await this.prisma.systemConfig.findUnique({
       where: { key: 'enable_custom_prompt' },
     });
-    const enableCustomPrompt = enableCustomPromptConfig
+    const enableCustomPromptSwitch = enableCustomPromptConfig
       ? enableCustomPromptConfig.value === 'true'
       : false;
 
-    if (!enableCustomPrompt) {
-      throw new BadRequestException('自定义提示词功能已被禁用');
+    const userTotalQueries = user?.totalQueries || 0;
+    if (!enableCustomPromptSwitch || userTotalQueries <= 10) {
+      throw new BadRequestException('自定义提示词功能已被禁用或未满足使用条件');
     }
 
     await this.prisma.userPromptTemplate.deleteMany({
