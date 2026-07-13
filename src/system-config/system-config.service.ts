@@ -176,7 +176,9 @@ export class SystemConfigService {
       ? enableCustomPromptConfig.value === 'true'
       : false;
 
-    const enableCustomPrompt = isAdmin || (enableCustomPromptSwitch && userTotalQueries > 10);
+    const enableCustomPrompt = isAdmin
+      ? enableCustomPromptSwitch
+      : (enableCustomPromptSwitch && userTotalQueries > 10);
 
     if (isAdmin) {
       const adminPrompt = await this.getAdminAiSystemPrompt();
