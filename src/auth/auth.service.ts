@@ -96,7 +96,10 @@ export class AuthService {
     }
   }
 
-  private async issueTokens(userId: number): Promise<AuthTokensResponse> {
+  private async issueTokens(
+    userId: number,
+    clientIp?: string | null,
+  ): Promise<AuthTokensResponse> {
     const user = await this.prisma.wechatUser.findUnique({
       where: { id: userId },
     });
@@ -107,19 +110,29 @@ export class AuthService {
     const refreshToken = this.generateRefreshToken();
     const refreshTokenHash = this.hashRefreshToken(refreshToken);
     const expiresAt = new Date(Date.now() + this.refreshExpiresSeconds * 1000);
+    const now = new Date();
 
-    await this.prisma.userSession.upsert({
-      where: { userId },
-      create: {
-        userId,
-        refreshTokenHash,
-        expiresAt,
-      },
-      update: {
-        refreshTokenHash,
-        expiresAt,
-      },
-    });
+    await this.prisma.$transaction([
+      this.prisma.userSession.upsert({
+        where: { userId },
+        create: {
+          userId,
+          refreshTokenHash,
+          expiresAt,
+        },
+        update: {
+          refreshTokenHash,
+          expiresAt,
+        },
+      }),
+      this.prisma.wechatUser.update({
+        where: { id: userId },
+        data: {
+          lastLoginAt: now,
+          ...(clientIp ? { lastLoginIp: clientIp } : {}),
+        },
+      }),
+    ]);
 
     const accessToken = await this.jwtService.signAsync({
       sub: userId,
@@ -163,7 +176,10 @@ export class AuthService {
     return this.toPublicUser(updatedUser);
   }
 
-  async refreshSession(refreshToken: string): Promise<AuthTokensResponse> {
+  async refreshSession(
+    refreshToken: string,
+    clientIp?: string | null,
+  ): Promise<AuthTokensResponse> {
     if (!refreshToken?.trim()) {
       throw new BadRequestException('refreshToken is required');
     }
@@ -177,14 +193,17 @@ export class AuthService {
     if (!session) {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
-    return this.issueTokens(session.userId);
+    return this.issueTokens(session.userId, clientIp);
   }
 
   async revokeSession(userId: number): Promise<void> {
     await this.prisma.userSession.deleteMany({ where: { userId } });
   }
 
-  async wechatLogin(code: string): Promise<AuthTokensResponse> {
+  async wechatLogin(
+    code: string,
+    clientIp?: string | null,
+  ): Promise<AuthTokensResponse> {
     if (!code) throw new BadRequestException('Code is required');
 
     let openid = code;
@@ -240,6 +259,6 @@ export class AuthService {
       });
     }
 
-    return this.issueTokens(user.id);
+    return this.issueTokens(user.id, clientIp);
   }
 }

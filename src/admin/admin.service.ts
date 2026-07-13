@@ -54,6 +54,8 @@ export class AdminService {
           shareCount: true,
           level: true,
           monthlyCardExpiry: true,
+          lastLoginAt: true,
+          lastLoginIp: true,
           createdAt: true,
         },
         orderBy,
