@@ -162,6 +162,63 @@ export class AdminService {
     });
   }
 
+  async getUserQueryRecords(
+    userId: number,
+    pageStr?: string,
+    limitStr?: string,
+  ) {
+    const page = pageStr ? Math.max(1, parseInt(pageStr, 10) || 1) : 1;
+    const limit = limitStr ? Math.min(50, Math.max(1, parseInt(limitStr, 10) || 20)) : 20;
+    const skip = (page - 1) * limit;
+    const where = { userId };
+
+    const [records, total] = await Promise.all([
+      this.prisma.queryRecord.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+        include: {
+          statementUser: {
+            select: { name: true },
+          },
+        },
+      }),
+      this.prisma.queryRecord.count({ where }),
+    ]);
+
+    return {
+      records: records.map((record) => {
+        let summary: any = null;
+        if (record.summaryJson) {
+          if (typeof record.summaryJson === 'string') {
+            try {
+              summary = JSON.parse(record.summaryJson);
+            } catch {
+              summary = null;
+            }
+          } else {
+            summary = record.summaryJson;
+          }
+        }
+        return {
+          id: record.id,
+          source: record.source,
+          status: record.status,
+          statementUser: record.statementUser?.name || summary?.name || null,
+          idNumber: summary?.idNumber
+            ? String(summary.idNumber).slice(-4)
+            : null,
+          createdAt: record.createdAt,
+        };
+      }),
+      total,
+      page,
+      limit,
+      hasMore: skip + records.length < total,
+    };
+  }
+
   async getQueryRecords(pageStr?: string, limitStr?: string, search?: string) {
     const page = pageStr ? parseInt(pageStr, 10) : 1;
     const limit = limitStr ? parseInt(limitStr, 10) : 20;

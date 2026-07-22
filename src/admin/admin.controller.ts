@@ -60,6 +60,15 @@ export class AdminController {
     return this.adminService.grantMonthlyCard(id, months ?? 1, adminId, reason);
   }
 
+  @Get('users/:id/query-records')
+  async getUserQueryRecords(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.adminService.getUserQueryRecords(id, page, limit);
+  }
+
   @Get('query-records')
   async getQueryRecords(
     @Query('page') page?: string,
