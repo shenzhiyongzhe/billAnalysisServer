@@ -18,6 +18,7 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:regression": "npm run build && node scripts/test-uploads-regression.js",
     "db:fix-sequences": "prisma db execute --file prisma/migrations/20260524120000_fix_serial_sequences/migration.sql"
   },
   "dependencies": {

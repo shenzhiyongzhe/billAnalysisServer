@@ -8,8 +8,10 @@ import {
   Put,
   Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/optional-jwt-auth.guard';
 import { CurrentUserId } from '../auth/current-user.decorator';
@@ -122,6 +124,22 @@ export class FeedbackController {
     @Body() body: { status?: string; adminNote?: string },
   ) {
     return this.feedbackService.updateUnsupportedFormat(id, body);
+  }
+
+  @Get('admin/unsupported-formats/:id/download')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  async downloadUnsupportedFormat(
+    @Param('id', ParseIntPipe) id: number,
+    @Res() res: Response,
+  ) {
+    const { stream, fileName } =
+      await this.feedbackService.getUnsupportedFormatDownload(id);
+    const encodedName = encodeURIComponent(fileName);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`,
+    );
+    stream.pipe(res);
   }
 
   @Get('admin/users/:id/diagnostics')

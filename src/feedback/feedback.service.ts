@@ -4,6 +4,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import * as fs from 'fs';
+import * as path from 'path';
 import { PrismaService } from '../prisma.service';
 
 const FEEDBACK_CATEGORIES = new Set([
@@ -461,6 +463,23 @@ export class FeedbackService {
       where: { id },
       data,
     });
+  }
+
+  async getUnsupportedFormatDownload(id: number) {
+    const item = await this.prisma.unsupportedFormatLog.findUnique({
+      where: { id },
+    });
+    if (!item || !item.storedFileName) {
+      throw new NotFoundException('文件记录不存在');
+    }
+    const filePath = path.join(process.cwd(), 'uploads', item.storedFileName);
+    if (!fs.existsSync(filePath)) {
+      throw new NotFoundException('原文件不存在或已被清除');
+    }
+    return {
+      stream: fs.createReadStream(filePath),
+      fileName: item.originalFileName || item.storedFileName,
+    };
   }
 
   async getUserDiagnostics(userId: number) {

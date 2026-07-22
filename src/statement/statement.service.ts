@@ -528,9 +528,9 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
           data: userHadMonthlyCard
             ? { totalQueries: { decrement: 1 } } // 月卡用户：只回退计数
             : {
-                remainingQueries: { increment: 1 },
-                totalQueries: { decrement: 1 },
-              }, // 普通用户：退还次数
+              remainingQueries: { increment: 1 },
+              totalQueries: { decrement: 1 },
+            }, // 普通用户：退还次数
         }),
       ]);
     } finally {
@@ -770,10 +770,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     userId: number;
     queryRecordId: number;
     reason:
-      | 'undetected_source'
-      | 'empty_transactions'
-      | 'csv_unsupported'
-      | 'other_parse';
+    | 'undetected_source'
+    | 'empty_transactions'
+    | 'csv_unsupported'
+    | 'other_parse';
     originalFileName: string;
     storedFileName: string;
     fileSize: number;
@@ -947,8 +947,8 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       result.maskedCardNumber =
         cardNum.length > 8
           ? cardNum.slice(0, 4) +
-            '*'.repeat(cardNum.length - 8) +
-            cardNum.slice(-4)
+          '*'.repeat(cardNum.length - 8) +
+          cardNum.slice(-4)
           : cardNum;
     }
 
@@ -1157,7 +1157,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       return '农商银行';
     }
 
-    if (/支付宝支付科技有限公司\s+交易流水证明/.test(headerText)) {
+    if (
+      /支付宝支付科技有限公司\s+(交易流水证明|电子客户回单)/.test(headerText) ||
+      headerText.includes('电子客户回单')
+    ) {
       return '支付宝';
     }
 
@@ -1182,75 +1185,88 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       const parsedTxs = this.parseWechatTransactions(text);
       transactions.push(...parsedTxs);
     } else if (source === '支付宝') {
-      const nameMatch = text.match(/兹证明:(.*?)\(证件号码:(.*?)\)/);
+      const nameMatch =
+        text.match(/兹证明:(.*?)\(证件号码:(.*?)\)/) ||
+        text.match(/姓名[：:]\s*([^\s\n\r]+)/);
       if (nameMatch) {
         name = nameMatch[1];
-        idNumber = nameMatch[2];
+        if (nameMatch[2]) idNumber = nameMatch[2];
       }
-      const lines = text
-        .split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean);
-      const txs: string[][] = [];
-      let currentTx: string[] = [];
 
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (
-          line.startsWith('支出 ') ||
-          line.startsWith('收入 ') ||
-          line === '不计' ||
-          line.startsWith('不计 ')
-        ) {
-          if (currentTx.length > 0) txs.push(currentTx);
-          currentTx = [line];
-        } else {
-          if (currentTx.length > 0) currentTx.push(line);
-        }
+      const accountMatch = text.match(/支付宝账户[：:]\s*([^\s\n\r]+)/);
+      if (accountMatch) {
+        cardNumber = accountMatch[1];
       }
-      if (currentTx.length > 0) txs.push(currentTx);
 
-      for (const txLines of txs) {
-        const fullText = txLines.join(' ');
-        const typeMatch = fullText.match(/^(支出|收入|不计\s*收支)/);
-        if (!typeMatch) continue;
+      if (text.includes('电子客户回单') || text.includes('导出信息：')) {
+        const receiptTxs = this.parseAlipayCustomerReceiptTransactions(text);
+        transactions.push(...receiptTxs);
+      } else {
+        const lines = text
+          .split('\n')
+          .map((l) => l.trim())
+          .filter(Boolean);
+        const txs: string[][] = [];
+        let currentTx: string[] = [];
 
-        const typeStr = typeMatch[1].replace(/\s+/g, '');
-        const type: '收入' | '支出' | '不计收支' = typeStr as any;
-
-        const amountMatch = fullText.match(/\s([0-9]+\.[0-9]{2})\s/);
-        if (!amountMatch) continue;
-
-        const amount = parseFloat(amountMatch[1]);
-
-        const dateMatch = fullText.match(
-          /(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}:\d{2}:\d{2}))?/,
-        );
-        if (!dateMatch) continue;
-
-        const date = dateMatch[2]
-          ? `${dateMatch[1]} ${dateMatch[2]}`
-          : dateMatch[1];
-        const month = dateMatch[1].substring(0, 7);
-
-        const counterparty =
-          fullText.substring(typeMatch[0].length).trim().split(/\s+/)[0] ||
-          '支付宝商户';
-
-        const startIdx = fullText.indexOf(counterparty) + counterparty.length;
-        const endIdx = fullText.indexOf(amountMatch[0]);
-        let product = '';
-        if (startIdx >= 0 && endIdx > startIdx) {
-          product = fullText.substring(startIdx, endIdx).trim();
-          product = product
-            .replace(
-              /(?:招商银行|交通银行|工商银行|建设银行|农业银行|中国银行|邮储银行|中信银行|光大银行|华夏银行|民生银行|广发银行|深发银行|招商|交行|工行|建行|农行|中行|网商银行|网商|花呗|余额宝|账户余额|余额|红包|储蓄卡|信用卡|借记卡)\(?[0-9]*\)?&?/g,
-              '',
-            )
-            .trim();
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (
+            line.startsWith('支出 ') ||
+            line.startsWith('收入 ') ||
+            line === '不计' ||
+            line.startsWith('不计 ')
+          ) {
+            if (currentTx.length > 0) txs.push(currentTx);
+            currentTx = [line];
+          } else {
+            if (currentTx.length > 0) currentTx.push(line);
+          }
         }
+        if (currentTx.length > 0) txs.push(currentTx);
 
-        transactions.push({ date, month, type, amount, counterparty, product });
+        for (const txLines of txs) {
+          const fullText = txLines.join(' ');
+          const typeMatch = fullText.match(/^(支出|收入|不计\s*收支)/);
+          if (!typeMatch) continue;
+
+          const typeStr = typeMatch[1].replace(/\s+/g, '');
+          const type: '收入' | '支出' | '不计收支' = typeStr as any;
+
+          const amountMatch = fullText.match(/\s([0-9]+\.[0-9]{2})\s/);
+          if (!amountMatch) continue;
+
+          const amount = parseFloat(amountMatch[1]);
+
+          const dateMatch = fullText.match(
+            /(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}:\d{2}:\d{2}))?/,
+          );
+          if (!dateMatch) continue;
+
+          const date = dateMatch[2]
+            ? `${dateMatch[1]} ${dateMatch[2]}`
+            : dateMatch[1];
+          const month = dateMatch[1].substring(0, 7);
+
+          const counterparty =
+            fullText.substring(typeMatch[0].length).trim().split(/\s+/)[0] ||
+            '支付宝商户';
+
+          const startIdx = fullText.indexOf(counterparty) + counterparty.length;
+          const endIdx = fullText.indexOf(amountMatch[0]);
+          let product = '';
+          if (startIdx >= 0 && endIdx > startIdx) {
+            product = fullText.substring(startIdx, endIdx).trim();
+            product = product
+              .replace(
+                /(?:招商银行|交通银行|工商银行|建设银行|农业银行|中国银行|邮储银行|中信银行|光大银行|华夏银行|民生银行|广发银行|深发银行|招商|交行|工行|建行|农行|中行|网商银行|网商|花呗|余额宝|账户余额|余额|红包|储蓄卡|信用卡|借记卡)\(?[0-9]*\)?&?/g,
+                '',
+              )
+              .trim();
+          }
+
+          transactions.push({ date, month, type, amount, counterparty, product });
+        }
       }
     } else if (source === '招商银行') {
       const nameMatch = text.match(/户\s*名[：:]\s*([^\s\n]+)/);
@@ -1671,6 +1687,99 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
     if (buffer) {
       tryParseBuffer(buffer);
+    }
+
+    return transactions;
+  }
+
+  private parseAlipayCustomerReceiptTransactions(text: string): Transaction[] {
+    const transactions: Transaction[] = [];
+
+    const startMatch = text.match(/起始时间：\[(\d{4}-\d{2}-\d{2})\s+[\d:]+\]/);
+    const endMatch = text.match(/终止时间：\[(\d{4}-\d{2}-\d{2})\s+[\d:]+\]/);
+    const fallbackDate = endMatch?.[1] || startMatch?.[1] || '2026-01-01';
+
+    const timestamps: string[] = [];
+    const linesAll = text.split('\n');
+    for (const line of linesAll) {
+      const match = line.match(/(20\d{10,12})/);
+      if (match) {
+        const str = match[1];
+        const y = str.slice(0, 4);
+        const m = str.slice(4, 6);
+        const d = str.slice(6, 8);
+        const hh = str.slice(8, 10);
+        const mm = str.slice(10, 12);
+        const mNum = parseInt(m, 10);
+        const dNum = parseInt(d, 10);
+        const hNum = parseInt(hh, 10);
+        if (mNum >= 1 && mNum <= 12 && dNum >= 1 && dNum <= 31 && hNum <= 24) {
+          timestamps.push(`${y}-${m}-${d} ${hh}:${mm}:00`);
+        }
+      }
+    }
+
+    const lines = text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    let txIdx = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      if (line.includes('#########') || /^\d{4}-\d{2}-\d{2}/.test(line)) {
+        let type: '收入' | '支出' | '不计收支' = '支出';
+        if (line.includes('不计收支') || line.includes('不计 收支')) {
+          type = '不计收支';
+        } else if (line.includes('收入')) {
+          type = '收入';
+        } else if (line.includes('支出')) {
+          type = '支出';
+        }
+
+        const amountMatch =
+          line.match(/\s([0-9]+(?:\.[0-9]{1,2})?)$/) ||
+          line.match(/([0-9]+\.[0-9]{2})$/);
+        if (!amountMatch) continue;
+        const amount = parseFloat(amountMatch[1]);
+        if (isNaN(amount)) continue;
+
+        const lineDateMatch = line.match(
+          /(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}:\d{2}:\d{2}))?/,
+        );
+        const date = lineDateMatch
+          ? lineDateMatch[2]
+            ? `${lineDateMatch[1]} ${lineDateMatch[2]}`
+            : lineDateMatch[1]
+          : timestamps[txIdx] || fallbackDate;
+
+        const month = date.substring(0, 7);
+
+        const tokens = line.split(/\t+|\s+/);
+        let category = '其它';
+        let counterparty = '支付宝商户';
+        let product = '';
+
+        if (tokens.length >= 3) {
+          category = tokens[1] || '其它';
+          counterparty = tokens[2] || '支付宝商户';
+          if (tokens.length >= 5) {
+            product = tokens.slice(3, tokens.length - 2).join(' ');
+          }
+        }
+
+        transactions.push({
+          date,
+          month,
+          type,
+          amount,
+          counterparty,
+          product,
+        });
+
+        txIdx++;
+      }
     }
 
     return transactions;

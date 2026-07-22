@@ -465,5 +465,44 @@ describe('StatementService', () => {
       expect(res.summary.name).toBe('匿名');
       expect(res.summary.phoneNumber).toBe('');
     });
+
+    it('parses Alipay Electronic Customer Receipt text format correctly', async () => {
+      const textContent = [
+        '------------------------------------------------------------------------------------',
+        '导出信息：',
+        '姓名：曾海峰',
+        '支付宝账户：18275370949',
+        '起始时间：[2025-07-02 00:00:00] 终止时间：[2026-07-01 23:59:59]',
+        '共2笔记录',
+        '------------------------支付宝支付科技有限公司 电子客户回单------------------------',
+        '交易时间 交易分类 交易对方 对方账号 商品说明 收/支 金额',
+        '######### 餐饮美食 luckincoffee zhi***@lkcoffe 订单付款 支出 15.8',
+        '######### 退款 钉钉红包 / 钉钉红包退款 不计收支 26',
+        '收/付款方式 交易状态 交易订单号 商家订单号 备注',
+        '招商银行储蓄卡交易成功 202607012300SXA1O4269626751',
+        '招商银行储蓄卡退款成功 20260701220020260701141724208001000',
+      ].join('\n');
+
+      const parsedSource = service.detectSourceFromText(textContent);
+      expect(parsedSource).toBe('支付宝');
+
+      const parsedData = (service as any).extractData(textContent, '支付宝');
+
+      expect(parsedData.summary.name).toBe('曾海峰');
+      expect(parsedData.summary.cardNumber).toBe('18275370949');
+      expect(parsedData.transactions).toHaveLength(2);
+      expect(parsedData.transactions[0]).toMatchObject({
+        type: '支出',
+        amount: 15.8,
+        counterparty: 'luckincoffee',
+        date: '2026-07-01 23:00:00',
+      });
+      expect(parsedData.transactions[1]).toMatchObject({
+        type: '不计收支',
+        amount: 26,
+        counterparty: '钉钉红包',
+        date: '2026-07-01 22:00:00',
+      });
+    });
   });
 });
