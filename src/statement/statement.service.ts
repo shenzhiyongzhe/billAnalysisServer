@@ -26,11 +26,31 @@ function resolveQueryServerBaseUrl(): string {
 
 const QUERY_SERVER_BASE_URL = resolveQueryServerBaseUrl();
 
-function queryServerUrl(path: string, searchParams?: URLSearchParams): string {
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+function queryServerUrl(urlPath: string, searchParams?: URLSearchParams): string {
+  const normalizedPath = urlPath.startsWith('/') ? urlPath : `/${urlPath}`;
   const url = `${QUERY_SERVER_BASE_URL}${normalizedPath}`;
   const query = searchParams?.toString();
   return query ? `${url}?${query}` : url;
+}
+
+function stripNullBytes<T>(obj: T): T {
+  if (typeof obj === 'string') {
+    return obj
+      .replace(/\u0000/g, '')
+      .replace(/[\uD800-\uDFFF]/g, '')
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ' ') as unknown as T;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(stripNullBytes) as unknown as T;
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const cleaned: any = {};
+    for (const key of Object.keys(obj)) {
+      cleaned[key] = stripNullBytes((obj as any)[key]);
+    }
+    return cleaned;
+  }
+  return obj;
 }
 
 export interface StatementSummary {
@@ -421,16 +441,19 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       // 将生成的记录 ID 写入 summary，以便持久化数据包含真实 ID
       parsedData.summary.id = recordId.toString();
 
+      const cleanSummary = stripNullBytes(parsedData.summary);
+      const cleanTransactions = stripNullBytes(parsedData.transactions);
+
       // 更新记录为 done
       await this.prisma.queryRecord.update({
         where: { id: recordId },
         data: {
           source,
           statementUserId,
-          summaryJson: parsedData.summary as any,
-          transactionsJson: parsedData.transactions as any,
-          startDate: this.parseDateOnlyToDate(parsedData.summary.startDate),
-          endDate: this.parseDateOnlyToDate(parsedData.summary.endDate),
+          summaryJson: cleanSummary as any,
+          transactionsJson: cleanTransactions as any,
+          startDate: this.parseDateOnlyToDate(cleanSummary.startDate),
+          endDate: this.parseDateOnlyToDate(cleanSummary.endDate),
           status: 'done',
         },
       });
@@ -520,7 +543,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
           where: { id: recordId },
           data: {
             status: 'failed',
-            summaryJson: { error: errorMsg } as any,
+            summaryJson: { error: this.sanitizeDbText(errorMsg, 2000) } as any,
           },
         }),
         this.prisma.wechatUser.update({
@@ -1171,6 +1194,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     let name = '未知';
     let idNumber = '';
     let cardNumber = '';
+    let phoneNumber = '';
     const transactions: Transaction[] = [];
     let startDate = '';
     let endDate = '';
@@ -1195,7 +1219,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
       const accountMatch = text.match(/支付宝账户[：:]\s*([^\s\n\r]+)/);
       if (accountMatch) {
-        cardNumber = accountMatch[1];
+        phoneNumber = accountMatch[1].trim();
       }
 
       if (text.includes('电子客户回单') || text.includes('导出信息：')) {
@@ -1506,7 +1530,8 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         source,
         name,
         idNumber,
-        cardNumber,
+        cardNumber: cardNumber || undefined,
+        phoneNumber: phoneNumber || undefined,
         startDate,
         endDate,
         totalIncome,

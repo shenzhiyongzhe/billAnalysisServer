@@ -489,7 +489,7 @@ describe('StatementService', () => {
       const parsedData = (service as any).extractData(textContent, '支付宝');
 
       expect(parsedData.summary.name).toBe('曾海峰');
-      expect(parsedData.summary.cardNumber).toBe('18275370949');
+      expect(parsedData.summary.phoneNumber).toBe('18275370949');
       expect(parsedData.transactions).toHaveLength(2);
       expect(parsedData.transactions[0]).toMatchObject({
         type: '支出',

@@ -135,7 +135,7 @@ export class PdfTextExtractor {
               detail: \`已完成 \${result.total} 页解析\`,
             });
 
-            const fullText = result.text.endsWith('\\n\\n') ? result.text : result.text + '\\n\\n';
+            const fullText = (result.text.endsWith('\\n\\n') ? result.text : result.text + '\\n\\n').replace(/\u0000/g, '');
             parentPort.postMessage({ success: true, taskId, text: fullText });
           } finally {
             await parser.destroy();
