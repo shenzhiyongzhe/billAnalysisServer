@@ -29,6 +29,10 @@ model WechatUser {
   customCategories   UserCustomCategory[]
   aiReports          AiAnalysisReport[]
   promptTemplate     UserPromptTemplate?
+  feedbackReports    FeedbackReport[]
+  clientErrorLogs    ClientErrorLog[]
+  unsupportedFormatLogs UnsupportedFormatLog[]
+  handledFeedbackReports FeedbackReport[] @relation("FeedbackHandler")
 }
 
 model ShareRecord {
@@ -75,6 +79,7 @@ model QueryRecord {
   endDate         DateTime?
   createdAt       DateTime @default(now())
   aiReports       AiAnalysisReport[]
+  unsupportedFormatLogs UnsupportedFormatLog[]
 }
 
 model SystemConfig {
@@ -147,4 +152,71 @@ model UserPromptTemplate {
   prompt    String     @db.Text
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
+}
+
+model FeedbackReport {
+  id         Int        @id @default(autoincrement())
+  userId     Int
+  user       WechatUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category   String     // login | upload | analysis | recharge | other
+  content    String     @db.Text
+  contact    String?
+  status     String     @default("pending") // pending | processing | resolved | ignored
+  contextJson Json?
+  adminNote  String?    @db.Text
+  handledBy  Int?
+  handler    WechatUser? @relation("FeedbackHandler", fields: [handledBy], references: [id], onDelete: SetNull)
+  handledAt  DateTime?
+  createdAt  DateTime   @default(now())
+
+  @@index([createdAt(sort: Desc)])
+  @@index([userId])
+  @@index([status])
+  @@index([category])
+}
+
+model ClientErrorLog {
+  id          Int         @id @default(autoincrement())
+  userId      Int?
+  user        WechatUser? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  level       String      @default("error") // error | warn
+  source      String      // request | auth | js | manual
+  message     String      @db.Text
+  statusCode  Int?
+  url         String?
+  page        String?
+  contextJson Json?
+  fingerprint String
+  createdAt   DateTime    @default(now())
+
+  @@index([createdAt(sort: Desc)])
+  @@index([userId])
+  @@index([fingerprint])
+  @@index([statusCode])
+  @@index([source])
+}
+
+model UnsupportedFormatLog {
+  id               Int          @id @default(autoincrement())
+  userId           Int
+  user             WechatUser   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  queryRecordId    Int?
+  queryRecord      QueryRecord? @relation(fields: [queryRecordId], references: [id], onDelete: SetNull)
+  reason           String       // undetected_source | empty_transactions | csv_unsupported | other_parse
+  originalFileName String
+  storedFileName   String
+  fileExt          String
+  fileSize         Int
+  guessedSource    String?
+  headerExcerpt    String       @db.Text @default("")
+  errorMessage     String       @db.Text
+  status           String       @default("open") // open | planned | supported | ignored
+  adminNote        String?      @db.Text
+  createdAt        DateTime     @default(now())
+
+  @@index([createdAt(sort: Desc)])
+  @@index([fileExt])
+  @@index([reason])
+  @@index([status])
+  @@index([userId])
 }

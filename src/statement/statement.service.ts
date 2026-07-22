@@ -224,7 +224,15 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
     // ④ 后台异步解析 PDF（不阻塞当前请求）
     setImmediate(() => {
-      void this.parseAndUpdateRecord(recordId, userId, buffer, fileName);
+      void this.parseAndUpdateRecord(
+        recordId,
+        userId,
+        buffer,
+        fileName,
+        undefined,
+        originalname,
+        source,
+      );
     });
 
     return { id: recordId, isDuplicate: false };
@@ -235,7 +243,14 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     buffer: Buffer,
     fileName: string,
     password?: string,
+    originalFileName?: string,
+    guessedSource?: string,
   ): Promise<void> {
+    let headerExcerpt = '';
+    let detectedSourceHint: string | undefined = guessedSource;
+    const resolvedOriginalName =
+      originalFileName || this.extractOriginalFileName(fileName);
+
     try {
       let source: string;
       let parsedData: StatementData;
@@ -259,6 +274,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         });
         parsedData = await this.parseCsvFile(buffer);
         source = parsedData.summary.source;
+        detectedSourceHint = source;
       } else {
         this.progressStore.set(recordId, {
           progress: 5,
@@ -273,6 +289,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
             this.progressStore.set(recordId, { progress, stage, detail });
           },
         );
+        headerExcerpt = this.buildHeaderExcerpt(text);
 
         this.progressStore.set(recordId, {
           progress: 90,
@@ -283,12 +300,24 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         const detected = this.detectSourceFromText(text);
 
         if (!detected) {
-          throw new BadRequestException(
-            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行或农商银行交易流水。',
-          );
+          const errorMessage =
+            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行或农商银行交易流水。';
+          await this.safeLogUnsupportedFormat({
+            userId,
+            queryRecordId: recordId,
+            reason: 'undetected_source',
+            originalFileName: resolvedOriginalName,
+            storedFileName: fileName,
+            fileSize: buffer.length,
+            guessedSource,
+            headerExcerpt,
+            errorMessage,
+          });
+          throw new BadRequestException(errorMessage);
         }
 
         source = detected;
+        detectedSourceHint = source;
 
         this.progressStore.set(recordId, {
           progress: 92,
@@ -306,9 +335,20 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       });
 
       if (parsedData.transactions.length === 0) {
-        throw new BadRequestException(
-          '该账单文件解析出的交易流水为空，可能由于账单内容格式不受支持。目前支持标准的微信、支付宝及主流银行借记卡交易流水。',
-        );
+        const errorMessage =
+          '该账单文件解析出的交易流水为空，可能由于账单内容格式不受支持。目前支持标准的微信、支付宝及主流银行借记卡交易流水。';
+        await this.safeLogUnsupportedFormat({
+          userId,
+          queryRecordId: recordId,
+          reason: 'empty_transactions',
+          originalFileName: resolvedOriginalName,
+          storedFileName: fileName,
+          fileSize: buffer.length,
+          guessedSource: detectedSourceHint || source,
+          headerExcerpt,
+          errorMessage,
+        });
+        throw new BadRequestException(errorMessage);
       } else {
         this.logger.log(
           `Parsed ${parsedData.transactions.length} transactions for record ${recordId} (${source})`,
@@ -453,7 +493,27 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       const userHadMonthlyCard =
         failedUser?.monthlyCardExpiry != null &&
         failedUser.monthlyCardExpiry > failNow;
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorMsg = this.extractErrorMessage(err);
+
+      const alreadyLogged =
+        errorMsg.includes('不支持的账单格式') ||
+        errorMsg.includes('交易流水为空');
+      if (!alreadyLogged) {
+        const reason = this.classifyUnsupportedReason(errorMsg);
+        if (reason) {
+          await this.safeLogUnsupportedFormat({
+            userId,
+            queryRecordId: recordId,
+            reason,
+            originalFileName: resolvedOriginalName,
+            storedFileName: fileName,
+            fileSize: buffer.length,
+            guessedSource: detectedSourceHint,
+            headerExcerpt,
+            errorMessage: errorMsg,
+          });
+        }
+      }
 
       await Promise.all([
         this.prisma.queryRecord.update({
@@ -607,16 +667,144 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     });
 
     const buffer = fs.readFileSync(filePath);
+    const storedName = path.basename(filePath);
     // 异步执行解析，带上密码
     setImmediate(() => {
       void this.parseAndUpdateRecord(
         recordId,
         userId,
         buffer,
-        path.basename(filePath),
+        storedName,
         password,
+        this.extractOriginalFileName(storedName),
+        record.source,
       );
     });
+  }
+
+  private extractErrorMessage(err: unknown): string {
+    if (err instanceof BadRequestException) {
+      const res = err.getResponse();
+      if (typeof res === 'string') return res;
+      if (res && typeof res === 'object' && 'message' in res) {
+        const m = (res as { message?: string | string[] }).message;
+        if (Array.isArray(m)) return m.join('; ');
+        if (typeof m === 'string') return m;
+      }
+    }
+    if (err instanceof Error) return err.message;
+    return String(err);
+  }
+
+  private extractOriginalFileName(storedFileName: string): string {
+    const idx = storedFileName.indexOf('_');
+    if (idx > 0 && idx < storedFileName.length - 1) {
+      return storedFileName.slice(idx + 1);
+    }
+    return storedFileName;
+  }
+
+  /** PDF 文本常含 \\0 等非法 UTF-8 字节，PostgreSQL text 会拒绝 */
+  private sanitizeDbText(input: string, maxLen = 2000): string {
+    return input
+      .replace(/\u0000/g, '')
+      .replace(/[\uD800-\uDFFF]/g, '')
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ' ')
+      .slice(0, maxLen);
+  }
+
+  private buildHeaderExcerpt(text: string): string {
+    const headerText = this.sanitizeDbText(text, 8000)
+      .split(/\r?\n/)
+      .slice(0, 30)
+      .join('\n');
+    const redacted = headerText
+      .replace(/\b\d{15,18}[\dXx]\b/g, '[ID]')
+      .replace(/\b1[3-9]\d{9}\b/g, '[PHONE]')
+      .replace(/\b\d{10,19}\b/g, '[NUM]');
+    return this.sanitizeDbText(redacted, 2000);
+  }
+
+  private classifyUnsupportedReason(
+    errorMsg: string,
+  ):
+    | 'undetected_source'
+    | 'empty_transactions'
+    | 'csv_unsupported'
+    | 'other_parse'
+    | null {
+    if (
+      errorMsg.includes('不支持的账单格式') ||
+      errorMsg.includes('未能在 CSV') ||
+      errorMsg.includes('Excel 账单缺少') ||
+      errorMsg.includes('Excel 工作表为空')
+    ) {
+      if (
+        errorMsg.includes('CSV') ||
+        errorMsg.includes('记账本') ||
+        errorMsg.includes('Excel')
+      ) {
+        return errorMsg.includes('记账本') || errorMsg.includes('CSV')
+          ? 'csv_unsupported'
+          : 'other_parse';
+      }
+      return 'undetected_source';
+    }
+    if (errorMsg.includes('交易流水为空') || errorMsg.includes('格式不受支持')) {
+      return 'empty_transactions';
+    }
+    if (errorMsg.includes('记账本') || errorMsg.includes('暂不支持解析')) {
+      return 'csv_unsupported';
+    }
+    if (
+      errorMsg.includes('格式') ||
+      errorMsg.includes('不支持') ||
+      errorMsg.includes('表头')
+    ) {
+      return 'other_parse';
+    }
+    return null;
+  }
+
+  private async safeLogUnsupportedFormat(data: {
+    userId: number;
+    queryRecordId: number;
+    reason:
+      | 'undetected_source'
+      | 'empty_transactions'
+      | 'csv_unsupported'
+      | 'other_parse';
+    originalFileName: string;
+    storedFileName: string;
+    fileSize: number;
+    guessedSource?: string;
+    headerExcerpt?: string;
+    errorMessage: string;
+  }): Promise<void> {
+    try {
+      const extMatch = data.originalFileName
+        .toLowerCase()
+        .match(/(\.[a-z0-9]+)$/);
+      const fileExt = extMatch?.[1] || '.unknown';
+      await this.prisma.unsupportedFormatLog.create({
+        data: {
+          userId: data.userId,
+          queryRecordId: data.queryRecordId,
+          reason: data.reason,
+          originalFileName: this.sanitizeDbText(data.originalFileName, 500),
+          storedFileName: this.sanitizeDbText(data.storedFileName, 500),
+          fileExt: this.sanitizeDbText(fileExt, 32),
+          fileSize: data.fileSize,
+          guessedSource: data.guessedSource
+            ? this.sanitizeDbText(data.guessedSource, 64)
+            : null,
+          headerExcerpt: this.sanitizeDbText(data.headerExcerpt || '', 2000),
+          errorMessage: this.sanitizeDbText(data.errorMessage, 2000),
+        },
+      });
+    } catch (e) {
+      this.logger.error('Failed to write UnsupportedFormatLog', e as Error);
+    }
   }
 
   private async assertRecordOwnership(recordId: number, userId: number) {

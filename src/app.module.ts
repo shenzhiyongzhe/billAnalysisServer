@@ -10,6 +10,7 @@ import { ShareModule } from './share/share.module';
 import { SystemConfigModule } from './system-config/system-config.module';
 import { StatisticsModule } from './statistics/statistics.module';
 import { AiModule } from './ai/ai.module';
+import { FeedbackModule } from './feedback/feedback.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { AiModule } from './ai/ai.module';
     SystemConfigModule,
     StatisticsModule,
     AiModule,
+    FeedbackModule,
     ScheduleModule.forRoot(),
   ],
   controllers: [AppController],
