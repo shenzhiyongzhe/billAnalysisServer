@@ -231,6 +231,8 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       source = '工商银行';
     else if (originalname.includes('农商') || originalname.includes('农村商业'))
       source = '农商银行';
+    else if (originalname.includes('农业') || originalname.includes('农行'))
+      source = '农业银行';
 
     // ③ 写文件 + 立即创建 pending 记录，同步返回 id
     const fileName = `${md5}_${originalname}`;
@@ -321,7 +323,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
         if (!detected) {
           const errorMessage =
-            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行或农商银行交易流水。';
+            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行、农商银行或农业银行交易流水。';
           await this.safeLogUnsupportedFormat({
             userId,
             queryRecordId: recordId,
@@ -595,7 +597,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const tips = [
       '账单上传后将采用银行级加密存储，仅供您本人查看。',
       '分析完成后，可生成多维度分类统计图表，方便记账与对账。',
-      '系统支持微信、支付宝、招商、交通、工商及顺德农商银行账单。',
+      '系统支持微信、支付宝、招商、交通、工商、顺德农商及农业银行账单。',
       '大体积账单解析可能会消耗较多时间，请耐心等待。',
       '如果解析失败，请检查账单文件是否完整或密码是否正确。',
     ];
@@ -1180,6 +1182,11 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       return '农商银行';
     }
 
+    // 农业银行标题在页脚，需查全文
+    if (text.includes('中国农业银行账户活期交易明细清单')) {
+      return '农业银行';
+    }
+
     if (
       /支付宝支付科技有限公司\s+(交易流水证明|电子客户回单)/.test(headerText) ||
       headerText.includes('电子客户回单')
@@ -1482,6 +1489,23 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
           transactions.push({ date, month, type, amount, counterparty });
         }
       }
+    } else if (source === '农业银行') {
+      const nameMatch = text.match(/户名：(.+?)\s+账户/);
+      if (nameMatch) {
+        name = nameMatch[1].trim();
+      }
+      const cardMatch = text.match(/账户：(\d{16,19})/);
+      if (cardMatch) {
+        cardNumber = cardMatch[1];
+      }
+      const rangeMatch = text.match(/起止日期：(\d{8})-(\d{8})/);
+      if (rangeMatch) {
+        const fmt = (d: string) =>
+          `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+        startDate = fmt(rangeMatch[1]);
+        endDate = fmt(rangeMatch[2]);
+      }
+      transactions.push(...this.parseAbcTransactions(text));
     }
 
     transactions.sort((a, b) => a.date.localeCompare(b.date));
@@ -1715,6 +1739,126 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
 
     return transactions;
+  }
+
+  private isAbcTransactionStart(line: string): boolean {
+    return /^\d{8}\s+(?:\d{6}|结息|利息税)(?:\s|$)/.test(line);
+  }
+
+  private shouldSkipAbcNoiseLine(line: string): boolean {
+    return (
+      !line ||
+      line.startsWith('户名：') ||
+      line.startsWith('币种：') ||
+      line.startsWith('起止日期：') ||
+      line.startsWith('交易日期') ||
+      line.includes('中国农业银行账户活期交易明细清单') ||
+      line.includes('该交易明细因不可预测') ||
+      /^第\d+页/.test(line) ||
+      /^--\s*\d+\s+of\s+\d+\s*--/i.test(line)
+    );
+  }
+
+  private parseAbcCounterparty(tail: string, summary: string): string {
+    const channels =
+      '电子商务|掌上银行|超级网银|网上银行|自动柜员机|微信|个人活期结息';
+    let rest = tail.trim();
+    if (!rest) return summary || '未知';
+
+    const logIdRe = /(?:^|\s)([A-Z]\d{9}|\d{9,10}|--)(?:\s+|$)/;
+    const logMatch = rest.match(logIdRe);
+    if (logMatch && logMatch.index !== undefined) {
+      rest = rest.slice(0, logMatch.index).trim();
+    } else {
+      const channelRe = new RegExp(`^(.*?)\\s+(?:${channels})(?:\\s+.*)?$`);
+      const channelMatch = rest.match(channelRe);
+      if (channelMatch) {
+        rest = channelMatch[1].trim();
+      }
+    }
+
+    if (!rest || rest === '--') {
+      return summary || '未知';
+    }
+    return rest;
+  }
+
+  private parseAbcTransactions(text: string): Transaction[] {
+    const transactions: Transaction[] = [];
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const tryParseBuffer = (raw: string): boolean => {
+      const line = raw.trim();
+      let dateRaw = '';
+      let timeRaw: string | null = null;
+      let summary = '';
+      let amountStr = '';
+      let tail = '';
+
+      const timed = line.match(
+        /^(\d{8})\s+(\d{6})\s+(\S+)\s+([+-]\d+\.\d{2})\s+(\d+\.\d{2})\s*(.*)$/,
+      );
+      if (timed) {
+        dateRaw = timed[1];
+        timeRaw = timed[2];
+        summary = timed[3];
+        amountStr = timed[4];
+        tail = timed[6] || '';
+      } else {
+        const interest = line.match(
+          /^(\d{8})\s+(结息|利息税)\s+([+-]\d+\.\d{2})\s+(\d+\.\d{2})\s*(.*)$/,
+        );
+        if (!interest) return false;
+        dateRaw = interest[1];
+        summary = interest[2];
+        amountStr = interest[3];
+        tail = interest[5] || '';
+      }
+
+      const y = dateRaw.slice(0, 4);
+      const m = dateRaw.slice(4, 6);
+      const d = dateRaw.slice(6, 8);
+      let date = `${y}-${m}-${d}`;
+      if (timeRaw) {
+        date += ` ${timeRaw.slice(0, 2)}:${timeRaw.slice(2, 4)}:${timeRaw.slice(4, 6)}`;
+      }
+      const month = `${y}-${m}`;
+      const amountNum = parseFloat(amountStr);
+      if (Number.isNaN(amountNum)) return false;
+
+      const type: '收入' | '支出' = amountNum < 0 ? '支出' : '收入';
+      const amount = Math.abs(amountNum);
+      const counterparty = this.parseAbcCounterparty(tail, summary);
+
+      transactions.push({ date, month, type, amount, counterparty });
+      return true;
+    };
+
+    let buffer = '';
+    for (const rawLine of lines) {
+      if (this.shouldSkipAbcNoiseLine(rawLine)) continue;
+
+      if (this.isAbcTransactionStart(rawLine)) {
+        if (buffer) {
+          tryParseBuffer(buffer);
+        }
+        buffer = rawLine;
+        continue;
+      }
+
+      if (buffer) {
+        buffer += rawLine;
+      }
+    }
+
+    if (buffer) {
+      tryParseBuffer(buffer);
+    }
+
+    return this.dedupeTransactions(transactions);
   }
 
   private parseAlipayCustomerReceiptTransactions(text: string): Transaction[] {

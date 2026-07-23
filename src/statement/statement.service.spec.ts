@@ -259,6 +259,43 @@ describe('StatementService', () => {
 
       expect(detect(text)).toBeNull();
     });
+
+    it('detects Agricultural Bank from footer title even when not in first lines', () => {
+      const text = [
+        '户名：张三 账户：6228481450433776818',
+        '币种：人民币 汇钞标识：本币',
+        '起止日期：20250720-20260719 电子流水号：26072012070207206305',
+        '交易日期 交易时间 交易摘要 交易金额 本次余额 对手信息',
+        '20250720 150904 转支 -20000.00 32410.15 陈美霞 Y091902039 掌上银行',
+        '该交易明细因不可预测的非人控技术原因可能导致数据缺失，明细内容仅供参考',
+        '中国农业银行账户活期交易明细清单',
+        '第1页，共89页',
+      ].join('\n');
+
+      expect(detect(text)).toBe('农业银行');
+    });
+
+    it('does not confuse ICBC or rural commercial with Agricultural Bank', () => {
+      expect(
+        detect(
+          [
+            '中国工商银行借记账户历史明细',
+            '户名：张三',
+            '起止日期：2025-07-20 — 2026-07-19',
+          ].join('\n'),
+        ),
+      ).toBe('工商银行');
+
+      expect(
+        detect(
+          [
+            '广东顺德农村商业银行股份有限公司',
+            '账户/卡明细信息',
+            '账号/卡号：6223222020253306 户名：xxxx 币种：CNY',
+          ].join('\n'),
+        ),
+      ).toBe('农商银行');
+    });
   });
 
   describe('parseCmbTransactions', () => {
@@ -374,6 +411,75 @@ describe('StatementService', () => {
         amount: 3.7,
         counterparty: '上海市松江区广富林街道鼓陶餐饮店（个体工',
       });
+    });
+  });
+
+  describe('parseAbcTransactions', () => {
+    const parse = (text: string) =>
+      (
+        service as unknown as { parseAbcTransactions(t: string): Transaction[] }
+      ).parseAbcTransactions(text);
+
+    it('parses single-line debit transfer', () => {
+      const txs = parse(
+        '20250720 150904 转支 -20000.00 32410.15 陈美霞 Y091902039 掌上银行',
+      );
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        date: '2025-07-20 15:09:04',
+        month: '2025-07',
+        type: '支出',
+        amount: 20000,
+        counterparty: '陈美霞',
+      });
+    });
+
+    it('parses interest rows without transaction time', () => {
+      const txs = parse(
+        '20250921 结息 +1.89 4276.70 -- 1590048610 掌上银行',
+      );
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        date: '2025-09-21',
+        type: '收入',
+        amount: 1.89,
+        counterparty: '结息',
+      });
+    });
+
+    it('merges wrapped counterparty lines but not page footers', () => {
+      const text = [
+        '20250720 013149 易宝支付 -1088.98 52465.06 海南宜信普惠小额',
+        '贷款有限公司 W004669150 电子商务 UA0720013149036866海南宜信普惠小额贷款有限公司',
+        '中国农业银行账户活期交易明细清单',
+        '第1页，共89页',
+        '户名：钟立华 账户：6228481450433776818',
+        '20250720 150904 转支 -20000.00 32410.15 陈美霞 Y091902039 掌上银行',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(2);
+      expect(txs[0]).toMatchObject({
+        type: '支出',
+        amount: 1088.98,
+        counterparty: '海南宜信普惠小额贷款有限公司',
+      });
+      expect(txs[0].counterparty).not.toContain('中国农业银行');
+      expect(txs[1]).toMatchObject({
+        amount: 20000,
+        counterparty: '陈美霞',
+      });
+    });
+
+    it('deduplicates repeated rows across page breaks', () => {
+      const text = [
+        '20250720 150904 转支 -20000.00 32410.15 陈美霞 Y091902039 掌上银行',
+        '-- 2 of 89 --',
+        '中国农业银行账户活期交易明细清单',
+        '交易日期 交易时间 交易摘要 交易金额 本次余额 对手信息',
+        '20250720 150904 转支 -20000.00 32410.15 陈美霞 Y091902039 掌上银行',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(1);
     });
   });
 
