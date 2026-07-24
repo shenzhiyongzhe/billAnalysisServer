@@ -76,33 +76,36 @@ export class StatementController {
   @Get('shared/:id/status')
   getSharedStatus(
     @Param('id') id: string,
+    @Query('st') st: string,
     @Query('token') token: string,
   ) {
     return this.statementService.getSharedRecordStatus(
       parseInt(id, 10),
-      token || '',
+      st || token || '',
     );
   }
 
   @Get('shared/:id/result')
   getSharedResult(
     @Param('id') id: string,
+    @Query('st') st: string,
     @Query('token') token: string,
   ) {
     return this.statementService.getSharedResultBundle(
       parseInt(id, 10),
-      token || '',
+      st || token || '',
     );
   }
 
   @Get('shared/:id/risk-status')
   getSharedRiskStatus(
     @Param('id') id: string,
+    @Query('st') st: string,
     @Query('token') token: string,
   ) {
     return this.statementService.getSharedRiskStatus(
       parseInt(id, 10),
-      token || '',
+      st || token || '',
     );
   }
 

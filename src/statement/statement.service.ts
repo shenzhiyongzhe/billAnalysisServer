@@ -861,7 +861,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
   private async assertShareAccess(recordId: number, token: string) {
     if (!token || typeof token !== 'string' || token.length < 8) {
-      throw new ForbiddenException('无权访问该记录');
+      throw new ForbiddenException('分享凭证无效');
     }
     const record = await this.prisma.queryRecord.findUnique({
       where: { id: recordId },
@@ -872,9 +872,9 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         summaryJson: true,
       },
     });
-    if (!record) throw new NotFoundException('Record not found');
+    if (!record) throw new NotFoundException('记录已被删除');
     if (!record.shareToken || record.shareToken !== token) {
-      throw new ForbiddenException('无权访问该记录');
+      throw new ForbiddenException('分享凭证无效');
     }
     return record;
   }

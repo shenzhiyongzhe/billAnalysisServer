@@ -52,12 +52,13 @@ export class AiController {
   @Get('statements/shared/:id/reports')
   async listSharedReports(
     @Param('id') id: string,
+    @Query('st') st: string,
     @Query('token') token: string,
   ) {
     try {
       const reports = await this.aiService.listSharedReports(
         parseInt(id, 10),
-        token || '',
+        st || token || '',
       );
       return { reports };
     } catch (err: unknown) {
@@ -77,13 +78,14 @@ export class AiController {
   async getSharedReport(
     @Param('id') id: string,
     @Param('reportId') reportId: string,
+    @Query('st') st: string,
     @Query('token') token: string,
   ) {
     try {
       return await this.aiService.getSharedReport(
         parseInt(id, 10),
         parseInt(reportId, 10),
-        token || '',
+        st || token || '',
       );
     } catch (err: unknown) {
       const error = err as Error & { status?: number; getStatus?: () => number };
