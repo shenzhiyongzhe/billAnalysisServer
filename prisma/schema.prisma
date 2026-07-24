@@ -102,14 +102,13 @@ model QueryOperationRecord {
 }
 
 model DailyStatistics {
-  id             Int      @id @default(autoincrement())
-  date           DateTime @unique
-  todayQueries   Int      @default(0)
-  todayRecharges Int      @default(0)
-  totalQueries   Int      @default(0)
-  totalRecharges Int      @default(0)
-  avgQueriesPerDay Float  @default(0)
-  createdAt      DateTime @default(now())
+  id               Int      @id @default(autoincrement())
+  date             DateTime @unique
+  todayQueries     Int      @default(0)
+  todayActiveUsers Int      @default(0)
+  totalQueries     Int      @default(0)
+  avgQueriesPerDay Float    @default(0)
+  createdAt        DateTime @default(now())
 }
 
 model GlobalCategoryKeyword {

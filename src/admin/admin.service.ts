@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { getShanghaiDayBounds } from '../common/shanghai-day';
 import { PrismaService } from '../prisma.service';
 
 @Injectable()
@@ -352,8 +353,7 @@ export class AdminService {
   }
 
   async getUserRanking() {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    const { start: todayStart, end: todayEnd } = getShanghaiDayBounds();
 
     const todayQueriesGroup = await this.prisma.queryRecord.groupBy({
       by: ['userId'],
@@ -363,6 +363,7 @@ export class AdminService {
       where: {
         createdAt: {
           gte: todayStart,
+          lt: todayEnd,
         },
       },
       orderBy: {

@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { Cron } from '@nestjs/schedule';
+import {
+  addShanghaiCalendarDays,
+  getShanghaiDayBounds,
+} from '../common/shanghai-day';
 
 @Injectable()
 export class StatisticsService {
@@ -8,8 +12,8 @@ export class StatisticsService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  // 每天晚上23:59:59触发当天的统计
-  @Cron('59 59 23 * * *')
+  // 每天上海时间 23:59:59 触发当天的统计
+  @Cron('59 59 23 * * *', { timeZone: 'Asia/Shanghai' })
   async handleCron() {
     this.logger.log('Starting daily statistics aggregation via cron job...');
     try {
@@ -21,52 +25,42 @@ export class StatisticsService {
   }
 
   async aggregateDate(date: Date) {
-    // Start of the given date (00:00:00.000)
-    const startOfDate = new Date(date);
-    startOfDate.setHours(0, 0, 0, 0);
-
-    // End of the given date (23:59:59.999)
-    const endOfDate = new Date(date);
-    endOfDate.setHours(23, 59, 59, 999);
+    const { dateKey, start, end } = getShanghaiDayBounds(date);
 
     // 1. Today's total queries
     const todayQueries = await this.prisma.queryRecord.count({
       where: {
         createdAt: {
-          gte: startOfDate,
-          lte: endOfDate,
+          gte: start,
+          lt: end,
         },
       },
     });
 
-    // 2. Today's recharges (operations where changeAmount > 0)
-    const todayRecharges = await this.prisma.queryOperationRecord.count({
+    // 2. Today's active users (distinct userId with at least one query)
+    const todayActiveGroups = await this.prisma.queryRecord.groupBy({
+      by: ['userId'],
       where: {
-        changeAmount: { gt: 0 },
         createdAt: {
-          gte: startOfDate,
-          lte: endOfDate,
+          gte: start,
+          lt: end,
         },
       },
     });
+    const todayActiveUsers = todayActiveGroups.length;
 
     // 3. Total queries overall up to now (accumulated from yesterday's stats + today's queries)
-    const yesterdayDate = new Date(startOfDate);
-    yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+    const yesterdayDateKey = addShanghaiCalendarDays(dateKey, -1);
 
     const yesterdayStats = await this.prisma.dailyStatistics.findUnique({
-      where: { date: yesterdayDate },
-      select: { totalQueries: true, totalRecharges: true },
+      where: { date: yesterdayDateKey },
+      select: { totalQueries: true },
     });
 
     const yesterdayTotalQueries = yesterdayStats?.totalQueries || 0;
     const totalQueries = yesterdayTotalQueries + todayQueries;
 
-    // 4. Total resets/operations overall up to now (accumulated from yesterday's stats + today's recharges)
-    const yesterdayTotalRecharges = yesterdayStats?.totalRecharges || 0;
-    const totalRecharges = yesterdayTotalRecharges + todayRecharges;
-
-    // 5. Average queries per day since first query
+    // 4. Average queries per day since first query
     // Since query records might be deleted periodically, find the true start date from historical stats first
     const firstStat = await this.prisma.dailyStatistics.findFirst({
       orderBy: { date: 'asc' },
@@ -76,32 +70,27 @@ export class StatisticsService {
       orderBy: { createdAt: 'asc' },
       select: { createdAt: true },
     });
-    const firstDate = firstStat?.date || firstRecord?.createdAt || startOfDate;
+    const firstDate = firstStat?.date || firstRecord?.createdAt || dateKey;
 
-    // Convert dates to absolute day numbers to avoid time offset errors
-    const startOfFirstDate = new Date(firstDate);
-    startOfFirstDate.setHours(0, 0, 0, 0);
-
-    const diffMs = startOfDate.getTime() - startOfFirstDate.getTime();
-    const diffDays = Math.max(1, Math.ceil(diffMs / (1000 * 60 * 60 * 24)) + 1); // include the first day itself
+    const firstDayKey = getShanghaiDayBounds(firstDate).dateKey;
+    const diffMs = dateKey.getTime() - firstDayKey.getTime();
+    const diffDays = Math.max(1, Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1);
     const avgQueriesPerDay = parseFloat((totalQueries / diffDays).toFixed(2));
 
     // Upsert the aggregated record
     return this.prisma.dailyStatistics.upsert({
-      where: { date: startOfDate },
+      where: { date: dateKey },
       update: {
         todayQueries,
-        todayRecharges,
+        todayActiveUsers,
         totalQueries,
-        totalRecharges,
         avgQueriesPerDay,
       },
       create: {
-        date: startOfDate,
+        date: dateKey,
         todayQueries,
-        todayRecharges,
+        todayActiveUsers,
         totalQueries,
-        totalRecharges,
         avgQueriesPerDay,
       },
     });
