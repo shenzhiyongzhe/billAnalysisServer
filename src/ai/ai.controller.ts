@@ -3,7 +3,6 @@ import {
   Post,
   Get,
   Param,
-  Query,
   Body,
   UseGuards,
   HttpException,
@@ -47,19 +46,12 @@ export class AiController {
     }
   }
 
-  // Shared read-only routes (before :id owner routes for clarity)
+  // Share-by-code read-only (before :id owner routes)
 
-  @Get('statements/shared/:id/reports')
-  async listSharedReports(
-    @Param('id') id: string,
-    @Query('st') st: string,
-    @Query('token') token: string,
-  ) {
+  @Get('statements/share/:sc/reports')
+  async listShareByCodeReports(@Param('sc') sc: string) {
     try {
-      const reports = await this.aiService.listSharedReports(
-        parseInt(id, 10),
-        st || token || '',
-      );
+      const reports = await this.aiService.listShareByCodeReports(sc || '');
       return { reports };
     } catch (err: unknown) {
       const error = err as Error & { status?: number; getStatus?: () => number };
@@ -74,18 +66,15 @@ export class AiController {
     }
   }
 
-  @Get('statements/shared/:id/reports/:reportId')
-  async getSharedReport(
-    @Param('id') id: string,
+  @Get('statements/share/:sc/reports/:reportId')
+  async getShareByCodeReport(
+    @Param('sc') sc: string,
     @Param('reportId') reportId: string,
-    @Query('st') st: string,
-    @Query('token') token: string,
   ) {
     try {
-      return await this.aiService.getSharedReport(
-        parseInt(id, 10),
+      return await this.aiService.getShareByCodeReport(
+        sc || '',
         parseInt(reportId, 10),
-        st || token || '',
       );
     } catch (err: unknown) {
       const error = err as Error & { status?: number; getStatus?: () => number };

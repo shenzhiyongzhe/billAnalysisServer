@@ -4,7 +4,6 @@ import {
   Get,
   Delete,
   Param,
-  Query,
   UseInterceptors,
   UploadedFile,
   BadRequestException,
@@ -71,42 +70,21 @@ export class StatementController {
     return this.statementService.getUserCustomCategories(userId);
   }
 
-  // --- Shared read-only routes (must be before :id routes) ---
+  // --- Share-by-code read-only (must be before :id routes) ---
 
-  @Get('shared/:id/status')
-  getSharedStatus(
-    @Param('id') id: string,
-    @Query('st') st: string,
-    @Query('token') token: string,
-  ) {
-    return this.statementService.getSharedRecordStatus(
-      parseInt(id, 10),
-      st || token || '',
-    );
+  @Get('share/:sc/status')
+  getShareByCodeStatus(@Param('sc') sc: string) {
+    return this.statementService.getShareByCodeStatus(sc || '');
   }
 
-  @Get('shared/:id/result')
-  getSharedResult(
-    @Param('id') id: string,
-    @Query('st') st: string,
-    @Query('token') token: string,
-  ) {
-    return this.statementService.getSharedResultBundle(
-      parseInt(id, 10),
-      st || token || '',
-    );
+  @Get('share/:sc/result')
+  getShareByCodeResult(@Param('sc') sc: string) {
+    return this.statementService.getShareByCodeResult(sc || '');
   }
 
-  @Get('shared/:id/risk-status')
-  getSharedRiskStatus(
-    @Param('id') id: string,
-    @Query('st') st: string,
-    @Query('token') token: string,
-  ) {
-    return this.statementService.getSharedRiskStatus(
-      parseInt(id, 10),
-      st || token || '',
-    );
+  @Get('share/:sc/risk-status')
+  getShareByCodeRiskStatus(@Param('sc') sc: string) {
+    return this.statementService.getShareByCodeRiskStatus(sc || '');
   }
 
   @Post(':id/share-token')

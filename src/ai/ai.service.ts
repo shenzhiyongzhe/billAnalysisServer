@@ -150,6 +150,22 @@ export class AiService {
     }
   }
 
+  private async findRecordByShareCode(sc: string) {
+    const code = (sc || '').trim();
+    if (!code || code.length < 8) {
+      throw new ForbiddenException('分享凭证无效');
+    }
+    const record = await this.prisma.queryRecord.findUnique({
+      where: { shareToken: code },
+      select: { id: true, shareToken: true, status: true },
+    });
+    if (!record) throw new NotFoundException('记录已被删除');
+    if (record.status !== 'done') {
+      throw new NotFoundException('账单尚未解析完成');
+    }
+    return record;
+  }
+
   /**
    * Enrich raw summaryJson with derived fields (maskedIdNumber, gender, age, nativePlace)
    * from idNumber, mirroring StatementService.enrichSummary logic.
@@ -784,6 +800,11 @@ ${ui.userNotes ? ui.userNotes : '未提供补充信息'}
     return this.findReportList(recordId);
   }
 
+  async listShareByCodeReports(sc: string) {
+    const record = await this.findRecordByShareCode(sc);
+    return this.findReportList(record.id);
+  }
+
   private async findReportList(recordId: number) {
     return this.prisma.aiAnalysisReport.findMany({
       where: { queryRecordId: recordId },
@@ -805,6 +826,11 @@ ${ui.userNotes ? ui.userNotes : '未提供补充信息'}
   async getSharedReport(recordId: number, reportId: number, token: string) {
     await this.assertShareAccess(recordId, token);
     return this.findReport(recordId, reportId);
+  }
+
+  async getShareByCodeReport(sc: string, reportId: number) {
+    const record = await this.findRecordByShareCode(sc);
+    return this.findReport(record.id, reportId);
   }
 
   private async findReport(recordId: number, reportId: number) {

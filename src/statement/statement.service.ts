@@ -583,6 +583,15 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  async getShareByCodeStatus(sc: string) {
+    const record = await this.findRecordByShareCode(sc);
+    return this.buildRecordStatusPayload(
+      record.id,
+      record.status,
+      record.summaryJson,
+    );
+  }
+
   private buildRecordStatusPayload(
     recordId: number,
     status: string,
@@ -866,6 +875,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const record = await this.prisma.queryRecord.findUnique({
       where: { id: recordId },
       select: {
+        id: true,
         userId: true,
         shareToken: true,
         status: true,
@@ -879,7 +889,33 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     return record;
   }
 
-  async ensureShareToken(recordId: number, userId: number): Promise<{ shareToken: string }> {
+  /** 按分享码查找记录（码在 path 上，不依赖 id） */
+  private async findRecordByShareCode(sc: string) {
+    const code = (sc || '').trim();
+    if (!code || code.length < 8) {
+      throw new ForbiddenException('分享凭证无效');
+    }
+    const record = await this.prisma.queryRecord.findUnique({
+      where: { shareToken: code },
+      select: {
+        id: true,
+        userId: true,
+        shareToken: true,
+        status: true,
+        summaryJson: true,
+      },
+    });
+    if (!record) {
+      // 码不存在：可能从未生成、或记录已删
+      throw new NotFoundException('记录已被删除');
+    }
+    return record;
+  }
+
+  async ensureShareToken(
+    recordId: number,
+    userId: number,
+  ): Promise<{ shareToken: string }> {
     await this.assertRecordOwnership(recordId, userId);
     const record = await this.prisma.queryRecord.findUnique({
       where: { id: recordId },
@@ -889,7 +925,8 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     if (record.shareToken) {
       return { shareToken: record.shareToken };
     }
-    const shareToken = crypto.randomBytes(24).toString('base64url');
+    // ~16 字符 URL 安全码
+    const shareToken = crypto.randomBytes(12).toString('base64url');
     await this.prisma.queryRecord.update({
       where: { id: recordId },
       data: { shareToken },
@@ -1108,6 +1145,11 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     return this.buildRiskStatus(id);
   }
 
+  async getShareByCodeRiskStatus(sc: string): Promise<{ isHighRisk: boolean }> {
+    const record = await this.findRecordByShareCode(sc);
+    return this.buildRiskStatus(record.id);
+  }
+
   private async buildRiskStatus(id: number): Promise<{ isHighRisk: boolean }> {
     const record = await this.prisma.queryRecord.findUnique({
       where: { id },
@@ -1136,6 +1178,11 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const shared = await this.assertShareAccess(id, token);
     // 用主人的自定义分类，保证分享视图与主人一致
     return this.buildResultBundle(id, shared.userId);
+  }
+
+  async getShareByCodeResult(sc: string): Promise<StatementResultBundle> {
+    const record = await this.findRecordByShareCode(sc);
+    return this.buildResultBundle(record.id, record.userId);
   }
 
   private async buildResultBundle(
