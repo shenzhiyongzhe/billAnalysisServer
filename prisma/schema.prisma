@@ -78,6 +78,7 @@ model QueryRecord {
   user            WechatUser @relation(fields: [userId], references: [id])
   statementUserId Int?
   statementUser   StatementUser? @relation(fields: [statementUserId], references: [id])
+  uploadRequestId String?  @unique
   filePath        String   
   source          String   
   status          String   @default("pending")

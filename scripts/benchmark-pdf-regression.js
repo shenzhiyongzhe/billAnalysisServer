@@ -31,7 +31,7 @@ if (!StatementService) {
   process.exit(1);
 }
 
-const EXPECTED_SOURCES = ['微信', '支付宝', '招商银行', '交通银行', '工商银行', '农商银行', '农业银行'];
+const EXPECTED_SOURCES = ['微信', '支付宝', '招商银行', '交通银行', '工商银行', '农商银行', '农业银行', '建设银行'];
 
 function collectPdfPaths(argv) {
   const paths = [];

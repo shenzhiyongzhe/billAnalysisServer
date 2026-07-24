@@ -15,6 +15,11 @@ import { StatementService } from './statement.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUserId } from '../auth/current-user.decorator';
 
+type UploadedStatementFile = {
+  buffer: Buffer;
+  originalname: string;
+};
+
 @Controller('statements')
 @UseGuards(JwtAuthGuard)
 export class StatementController {
@@ -23,9 +28,10 @@ export class StatementController {
   @Post('upload')
   @UseInterceptors(FileInterceptor('file'))
   async uploadFile(
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: UploadedStatementFile,
     @CurrentUserId() userId: number,
     @Body('fileName') fileName?: string,
+    @Body('uploadRequestId') uploadRequestId?: string,
   ) {
     if (!file) {
       throw new BadRequestException('No file uploaded');
@@ -35,6 +41,7 @@ export class StatementController {
       userId,
       file.buffer,
       name,
+      uploadRequestId,
     );
     return { id: result.id, isDuplicate: result.isDuplicate };
   }

@@ -2,15 +2,42 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { StatementService, Transaction } from './statement.service';
 import { PrismaService } from '../prisma.service';
 import { ShareCodeService } from '../share-code/share-code.service';
+import * as fs from 'fs';
 
 describe('StatementService', () => {
   let service: StatementService;
+  let prisma: {
+    queryRecord: {
+      findUnique: jest.Mock;
+      findFirst: jest.Mock;
+      create: jest.Mock;
+    };
+    wechatUser: {
+      findUnique: jest.Mock;
+      update: jest.Mock;
+      updateMany: jest.Mock;
+    };
+    $transaction: jest.Mock;
+  };
 
   beforeEach(async () => {
+    prisma = {
+      queryRecord: {
+        findUnique: jest.fn(),
+        findFirst: jest.fn(),
+        create: jest.fn(),
+      },
+      wechatUser: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+        updateMany: jest.fn(),
+      },
+      $transaction: jest.fn(),
+    };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         StatementService,
-        { provide: PrismaService, useValue: {} },
+        { provide: PrismaService, useValue: prisma },
         {
           provide: ShareCodeService,
           useValue: {
@@ -30,6 +57,113 @@ describe('StatementService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  describe('processAndSaveFile idempotency', () => {
+    beforeEach(() => {
+      jest.spyOn(fs.promises, 'writeFile').mockResolvedValue();
+      (service as any).parseAndUpdateRecord = jest
+        .fn()
+        .mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('creates and charges once for a new upload request id', async () => {
+      prisma.queryRecord.findUnique.mockResolvedValue(null);
+      prisma.queryRecord.findFirst.mockResolvedValue(null);
+      prisma.wechatUser.findUnique.mockResolvedValue({
+        id: 7,
+        monthlyCardExpiry: null,
+      });
+      prisma.wechatUser.updateMany.mockResolvedValue({ count: 1 });
+      prisma.queryRecord.create.mockResolvedValue({ id: 42 });
+      prisma.$transaction.mockImplementation((callback) => callback(prisma));
+
+      await expect(
+        service.processAndSaveFile(
+          7,
+          Buffer.from('statement'),
+          '微信账单.pdf',
+          'upload_request_001',
+        ),
+      ).resolves.toEqual({ id: 42, isDuplicate: false });
+
+      expect(prisma.wechatUser.updateMany).toHaveBeenCalledTimes(1);
+      expect(prisma.queryRecord.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          userId: 7,
+          uploadRequestId: 'upload_request_001',
+          status: 'pending',
+        }),
+      });
+    });
+
+    it('returns the original record without charging for a replay', async () => {
+      prisma.queryRecord.findUnique.mockResolvedValue({ id: 42, userId: 7 });
+
+      await expect(
+        service.processAndSaveFile(
+          7,
+          Buffer.from('statement'),
+          '微信账单.pdf',
+          'upload_request_001',
+        ),
+      ).resolves.toEqual({ id: 42, isDuplicate: false });
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.wechatUser.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('recovers the winning record after a concurrent unique conflict', async () => {
+      prisma.queryRecord.findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: 43, userId: 7 });
+      prisma.queryRecord.findFirst.mockResolvedValue(null);
+      prisma.$transaction.mockRejectedValue({ code: 'P2002' });
+
+      await expect(
+        service.processAndSaveFile(
+          7,
+          Buffer.from('statement'),
+          '微信账单.pdf',
+          'upload_request_002',
+        ),
+      ).resolves.toEqual({ id: 43, isDuplicate: false });
+    });
+
+    it('creates separate records for different upload request ids', async () => {
+      prisma.queryRecord.findUnique.mockResolvedValue(null);
+      prisma.queryRecord.findFirst.mockResolvedValue(null);
+      prisma.wechatUser.findUnique.mockResolvedValue({
+        id: 7,
+        monthlyCardExpiry: null,
+      });
+      prisma.wechatUser.updateMany.mockResolvedValue({ count: 1 });
+      prisma.queryRecord.create
+        .mockResolvedValueOnce({ id: 44 })
+        .mockResolvedValueOnce({ id: 45 });
+      prisma.$transaction.mockImplementation((callback) => callback(prisma));
+
+      const first = await service.processAndSaveFile(
+        7,
+        Buffer.from('statement-a'),
+        '微信账单-a.pdf',
+        'upload_request_003',
+      );
+      const second = await service.processAndSaveFile(
+        7,
+        Buffer.from('statement-b'),
+        '微信账单-b.pdf',
+        'upload_request_004',
+      );
+
+      expect(first.id).toBe(44);
+      expect(second.id).toBe(45);
+      expect(prisma.wechatUser.updateMany).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('parseWechatTransactions', () => {
@@ -307,6 +441,37 @@ describe('StatementService', () => {
         ),
       ).toBe('农商银行');
     });
+
+    it('detects China Construction Bank from the personal account title', () => {
+      const text = [
+        '中国建设银行个人活期账户全部交易明细',
+        '卡号/账号:6215340300413250169 客户名称:黄梓聪 币别:人民币元 钞汇:钞 起止日期:20250723-20260723',
+        '序号 摘要 交易日期 交易金额 账户余额 交易地点/附言 对方账号与户名',
+        '2 消费 20250724 -298.00 740.77 *** Z******0014/*动漫',
+      ].join('\n');
+
+      expect(detect(text)).toBe('建设银行');
+    });
+
+    it('does not confuse CCB with Agricultural Bank or ICBC', () => {
+      expect(
+        detect(
+          [
+            '中国建设银行个人活期账户全部交易明细',
+            '卡号/账号:6215340300413250169 客户名称:测试',
+          ].join('\n'),
+        ),
+      ).toBe('建设银行');
+
+      expect(
+        detect(
+          [
+            '中国农业银行账户活期交易明细清单',
+            '户名：张三 账户：6228481450433776818',
+          ].join('\n'),
+        ),
+      ).toBe('农业银行');
+    });
   });
 
   describe('parseCmbTransactions', () => {
@@ -491,6 +656,113 @@ describe('StatementService', () => {
       ].join('\n');
       const txs = parse(text);
       expect(txs).toHaveLength(1);
+    });
+  });
+
+  describe('parseCcbTransactions', () => {
+    const parse = (text: string) =>
+      (
+        service as unknown as { parseCcbTransactions(t: string): Transaction[] }
+      ).parseCcbTransactions(text);
+
+    it('parses expense and income rows with comma amounts', () => {
+      const text = [
+        '2 消费 20250724 -298.00 740.77 *** Z******0014/*动漫',
+        '43 支付机构提现 20250801 466.07 7,480.08 *** 617995503/黄梓聪',
+        '51 还款 20250803 -7,432.60 2,012.32 *** Z******0010/*梓聪',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(3);
+      expect(txs[0]).toMatchObject({
+        date: '2025-07-24',
+        month: '2025-07',
+        type: '支出',
+        amount: 298,
+        counterparty: '*动漫',
+      });
+      expect(txs[1]).toMatchObject({
+        date: '2025-08-01',
+        type: '收入',
+        amount: 466.07,
+        counterparty: '黄梓聪',
+      });
+      expect(txs[2]).toMatchObject({
+        type: '支出',
+        amount: 7432.6,
+        counterparty: '*梓聪',
+      });
+    });
+
+    it('uses summary when counterparty is missing', () => {
+      const txs = parse(
+        [
+          '202 利息存入 20250921 0.36 8,423.01',
+          '417 收费 20251224 -15.00 252.85 ***',
+          '462 ATM存款 20260217 1,000.00 1,383.01 ***',
+        ].join('\n'),
+      );
+      expect(txs).toHaveLength(3);
+      expect(txs[0]).toMatchObject({
+        type: '收入',
+        amount: 0.36,
+        counterparty: '利息存入',
+      });
+      expect(txs[1]).toMatchObject({
+        type: '支出',
+        amount: 15,
+        counterparty: '收费',
+      });
+      expect(txs[2]).toMatchObject({
+        type: '收入',
+        amount: 1000,
+        counterparty: 'ATM存款',
+      });
+    });
+
+    it('merges wrapped summary and counterparty lines', () => {
+      const text = [
+        '1 人民币卡消费',
+        '款 20250723 135.66 1,038.77 *** 029100330000032400000/待清算商户',
+        '款项440660801',
+        '297 保险费（跨行',
+        '） 20251109 -14,780.15 13,109.89 *** 1202021719800464074/中国人民人寿',
+        '保险股份有限公司',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(2);
+      expect(txs[0]).toMatchObject({
+        type: '收入',
+        amount: 135.66,
+        counterparty: '待清算商户款项440660801',
+      });
+      expect(txs[1]).toMatchObject({
+        type: '支出',
+        amount: 14780.15,
+        counterparty: '中国人民人寿保险股份有限公司',
+      });
+    });
+
+    it('skips page headers/footers and keeps distinct same-day charges', () => {
+      const text = [
+        '中国建设银行个人活期账户全部交易明细',
+        '卡号/账号:6215340300413250169 客户名称:黄梓聪 币别:人民币元 钞汇:钞 起止日期:20250723-20260723',
+        '当前时间段收支金额合计：人民币元； 总支出：1,165,733.89 总收入：1,164,870.20',
+        '序号 摘要 交易日期 交易金额 账户余额 交易地点/附言 对方账号与户名',
+        '85 充值 20250812 -1,200.00 16,156.07 *** Z******0010/**转账',
+        '生成时间：2026-07-23 18:09:23',
+        '温馨提示：以上明细为查询周期内全量明细',
+        '- 第1页/共27页 -',
+        '-- 1 of 27 --',
+        '中国建设银行个人活期账户全部交易明细',
+        '序号 摘要 交易日期 交易金额 账户余额 交易地点/附言 对方账号与户名',
+        '86 充值 20250812 -1,200.00 14,956.07 *** Z******0010/**转账',
+        '3 消费 20250724 -192.00 1,107.37 *** Z******0010/*哲菁',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(3);
+      expect(txs[0]).toMatchObject({ amount: 1200, counterparty: '**转账' });
+      expect(txs[1]).toMatchObject({ amount: 1200, counterparty: '**转账' });
+      expect(txs[2].counterparty).toBe('*哲菁');
     });
   });
 

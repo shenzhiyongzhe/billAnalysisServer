@@ -161,11 +161,30 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     userId: number,
     buffer: Buffer,
     originalname: string,
+    uploadRequestId?: string,
   ): Promise<{ id: number; isDuplicate: boolean }> {
+    const requestId = uploadRequestId?.trim() || undefined;
+    if (requestId && !/^[A-Za-z0-9_-]{8,128}$/.test(requestId)) {
+      throw new BadRequestException('Invalid upload request id');
+    }
+
+    if (requestId) {
+      const replay = await this.prisma.queryRecord.findUnique({
+        where: { uploadRequestId: requestId },
+        select: { id: true, userId: true },
+      });
+      if (replay) {
+        if (replay.userId !== userId) {
+          throw new BadRequestException('Invalid upload request id');
+        }
+        return { id: replay.id, isDuplicate: false };
+      }
+    }
+
     const md5 = crypto.createHash('md5').update(buffer).digest('hex');
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
 
-    // 0. Check if a duplicate record exists in the last 3 days
+    // 0. Check if a reusable duplicate record exists in the last 3 days
     const existing = await this.prisma.queryRecord.findFirst({
       where: {
         userId,
@@ -195,38 +214,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    // ① 校验用户并根据月卡状态决定是否扣减次数
-    const user = await this.prisma.wechatUser.findUnique({
-      where: { id: userId },
-      select: { id: true, remainingQueries: true, monthlyCardExpiry: true },
-    });
-    if (!user) throw new NotFoundException('User not found');
-
-    const now = new Date();
-    const hasMonthlyCard =
-      user.monthlyCardExpiry != null && user.monthlyCardExpiry > now;
-
-    if (hasMonthlyCard) {
-      // 月卡有效：仅累加 totalQueries，不扣减 remainingQueries
-      await this.prisma.wechatUser.update({
-        where: { id: userId },
-        data: { totalQueries: { increment: 1 } },
-      });
-    } else {
-      // 无月卡：原子扣减次数
-      const updated = await this.prisma.wechatUser.updateMany({
-        where: { id: userId, remainingQueries: { gt: 0 } },
-        data: {
-          remainingQueries: { decrement: 1 },
-          totalQueries: { increment: 1 },
-        },
-      });
-      if (updated.count === 0) {
-        throw new BadRequestException('剩余分析次数不足');
-      }
-    }
-
-    // ② 从文件名快速判断来源（不解析 PDF），用于立即建记录
+    // ① 从文件名快速判断来源（不解析 PDF），用于立即建记录
     let source = '未知';
     if (originalname.includes('微信')) source = '微信';
     else if (originalname.includes('支付宝')) source = '支付宝';
@@ -238,18 +226,113 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       source = '农商银行';
     else if (originalname.includes('农业') || originalname.includes('农行'))
       source = '农业银行';
+    else if (originalname.includes('建设') || originalname.includes('建行'))
+      source = '建设银行';
 
-    // ③ 写文件 + 立即创建 pending 记录，同步返回 id
+    // ② 写文件，并在事务内完成扣次和建记录
     const fileName = `${md5}_${originalname}`;
     const filePath = path.join(this.uploadsDir, fileName);
     await fs.promises.writeFile(filePath, buffer);
 
-    const record = await this.prisma.queryRecord.create({
-      data: { userId, filePath: fileName, source, status: 'pending' },
-    });
-    const recordId = record.id;
+    let recordId: number;
+    let shouldParse = false;
+    try {
+      const result = await this.prisma.$transaction(async (tx) => {
+        if (requestId) {
+          const replay = await tx.queryRecord.findUnique({
+            where: { uploadRequestId: requestId },
+            select: { id: true, userId: true },
+          });
+          if (replay) {
+            if (replay.userId !== userId) {
+              throw new BadRequestException('Invalid upload request id');
+            }
+            return { id: replay.id, created: false, isDuplicate: false };
+          }
+        }
 
-    // ④ 后台异步解析 PDF（不阻塞当前请求）
+        const duplicate = await tx.queryRecord.findFirst({
+          where: {
+            userId,
+            filePath: { startsWith: md5 },
+            createdAt: { gte: threeDaysAgo },
+          },
+        });
+        if (duplicate) {
+          const isFormatError =
+            duplicate.status === 'failed' &&
+            duplicate.summaryJson &&
+            typeof duplicate.summaryJson === 'object' &&
+            (duplicate.summaryJson as any).error?.includes('格式');
+          if (
+            duplicate.status === 'done' ||
+            duplicate.status === 'password_required' ||
+            isFormatError
+          ) {
+            return { id: duplicate.id, created: false, isDuplicate: true };
+          }
+        }
+
+        const user = await tx.wechatUser.findUnique({
+          where: { id: userId },
+          select: { id: true, monthlyCardExpiry: true },
+        });
+        if (!user) throw new NotFoundException('User not found');
+
+        const hasMonthlyCard =
+          user.monthlyCardExpiry != null &&
+          user.monthlyCardExpiry > new Date();
+        if (hasMonthlyCard) {
+          await tx.wechatUser.update({
+            where: { id: userId },
+            data: { totalQueries: { increment: 1 } },
+          });
+        } else {
+          const updated = await tx.wechatUser.updateMany({
+            where: { id: userId, remainingQueries: { gt: 0 } },
+            data: {
+              remainingQueries: { decrement: 1 },
+              totalQueries: { increment: 1 },
+            },
+          });
+          if (updated.count === 0) {
+            throw new BadRequestException('剩余分析次数不足');
+          }
+        }
+
+        const record = await tx.queryRecord.create({
+          data: {
+            userId,
+            uploadRequestId: requestId,
+            filePath: fileName,
+            source,
+            status: 'pending',
+          },
+        });
+        return { id: record.id, created: true, isDuplicate: false };
+      });
+
+      recordId = result.id;
+      shouldParse = result.created;
+      if (!shouldParse) {
+        return { id: result.id, isDuplicate: result.isDuplicate };
+      }
+    } catch (err) {
+      // Two retries can pass the initial lookup concurrently. The unique
+      // request id rolls the losing transaction back, including its charge.
+      if (requestId && (err as { code?: string })?.code === 'P2002') {
+        const replay = await this.prisma.queryRecord.findUnique({
+          where: { uploadRequestId: requestId },
+          select: { id: true, userId: true },
+        });
+        if (replay?.userId === userId) {
+          return { id: replay.id, isDuplicate: false };
+        }
+      }
+      throw err;
+    }
+
+    // ③ 后台异步解析文件（不阻塞当前请求）
     setImmediate(() => {
       void this.parseAndUpdateRecord(
         recordId,
@@ -328,7 +411,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
         if (!detected) {
           const errorMessage =
-            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行、农商银行或农业银行交易流水。';
+            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行、农商银行、农业银行或建设银行交易流水。';
           await this.safeLogUnsupportedFormat({
             userId,
             queryRecordId: recordId,
@@ -630,7 +713,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const tips = [
       '账单上传后将采用银行级加密存储，仅供您本人查看。',
       '分析完成后，可生成多维度分类统计图表，方便记账与对账。',
-      '系统支持微信、支付宝、招商、交通、工商、顺德农商及农业银行账单。',
+      '系统支持微信、支付宝、招商、交通、工商、顺德农商、农业及建设银行账单。',
       '大体积账单解析可能会消耗较多时间，请耐心等待。',
       '如果解析失败，请检查账单文件是否完整或密码是否正确。',
     ];
@@ -1270,6 +1353,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       return '工商银行';
     }
 
+    if (headerText.includes('中国建设银行个人活期账户全部交易明细')) {
+      return '建设银行';
+    }
+
     if (/农村商业银行股份有限公司\s+账户\/卡明细信息/.test(headerText)) {
       return '农商银行';
     }
@@ -1598,6 +1685,23 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         endDate = fmt(rangeMatch[2]);
       }
       transactions.push(...this.parseAbcTransactions(text));
+    } else if (source === '建设银行') {
+      const nameMatch = text.match(/客户名称:(.+?)\s+币别/);
+      if (nameMatch) {
+        name = nameMatch[1].trim();
+      }
+      const cardMatch = text.match(/卡号\/账号:(\d+)/);
+      if (cardMatch) {
+        cardNumber = cardMatch[1];
+      }
+      const rangeMatch = text.match(/起止日期:(\d{8})-(\d{8})/);
+      if (rangeMatch) {
+        const fmt = (d: string) =>
+          `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+        startDate = fmt(rangeMatch[1]);
+        endDate = fmt(rangeMatch[2]);
+      }
+      transactions.push(...this.parseCcbTransactions(text));
     }
 
     transactions.sort((a, b) => a.date.localeCompare(b.date));
@@ -1951,6 +2055,102 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
 
     return this.dedupeTransactions(transactions);
+  }
+
+  private isCcbTransactionStart(line: string): boolean {
+    return /^\d+\s+\S+/.test(line);
+  }
+
+  private shouldSkipCcbNoiseLine(line: string): boolean {
+    return (
+      !line ||
+      line.includes('中国建设银行个人活期账户全部交易明细') ||
+      line.startsWith('卡号/账号:') ||
+      line.startsWith('当前时间段') ||
+      line.startsWith('序号 ') ||
+      line.startsWith('生成时间') ||
+      line.startsWith('温馨提示') ||
+      line.includes('总支出：') ||
+      line.includes('总收入：') ||
+      /^-?\s*第\d+页/.test(line) ||
+      /^--\s*\d+\s+of\s+\d+\s*--/i.test(line)
+    );
+  }
+
+  private parseCcbCounterparty(tail: string, summary: string): string {
+    const rest = (tail || '').trim();
+    if (!rest || rest === '***') {
+      return summary || '未知';
+    }
+    const slash = rest.indexOf('/');
+    if (slash >= 0) {
+      const name = rest.slice(slash + 1).trim();
+      return name || summary || '未知';
+    }
+    return rest;
+  }
+
+  private parseCcbTransactions(text: string): Transaction[] {
+    const transactions: Transaction[] = [];
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const tryParseBuffer = (raw: string): boolean => {
+      const line = raw.trim();
+      const match = line.match(
+        /^(\d+)\s+(.+?)\s+(\d{8})\s+(-?[0-9,]+\.\d{2})\s+([0-9,]+\.\d{2})(?:\s+(\S+)(?:\s+(.*))?)?$/,
+      );
+      if (!match) return false;
+
+      const dateRaw = match[3];
+      const amountStr = match[4].replace(/,/g, '');
+      const summary = match[2].trim();
+      const location = match[6] || '';
+      const counterpartyRaw = match[7] || '';
+
+      const y = dateRaw.slice(0, 4);
+      const m = dateRaw.slice(4, 6);
+      const d = dateRaw.slice(6, 8);
+      const date = `${y}-${m}-${d}`;
+      const month = `${y}-${m}`;
+      const amountNum = parseFloat(amountStr);
+      if (Number.isNaN(amountNum)) return false;
+
+      const type: '收入' | '支出' = amountNum < 0 ? '支出' : '收入';
+      const amount = Math.abs(amountNum);
+      const counterparty = this.parseCcbCounterparty(
+        counterpartyRaw || (location === '***' ? '' : location),
+        summary,
+      );
+
+      transactions.push({ date, month, type, amount, counterparty });
+      return true;
+    };
+
+    let buffer = '';
+    for (const rawLine of lines) {
+      if (this.shouldSkipCcbNoiseLine(rawLine)) continue;
+
+      if (this.isCcbTransactionStart(rawLine)) {
+        if (buffer) {
+          tryParseBuffer(buffer);
+        }
+        buffer = rawLine;
+        continue;
+      }
+
+      if (buffer) {
+        buffer += rawLine;
+      }
+    }
+
+    if (buffer) {
+      tryParseBuffer(buffer);
+    }
+
+    return transactions;
   }
 
   private parseAlipayCustomerReceiptTransactions(text: string): Transaction[] {
