@@ -130,6 +130,26 @@ export class AiService {
     }
   }
 
+  private async assertShareAccess(
+    recordId: number,
+    token: string,
+  ): Promise<void> {
+    if (!token || typeof token !== 'string' || token.length < 8) {
+      throw new ForbiddenException('无权访问该记录');
+    }
+    const record = await this.prisma.queryRecord.findUnique({
+      where: { id: recordId },
+      select: { shareToken: true, status: true },
+    });
+    if (!record) throw new NotFoundException('Record not found');
+    if (record.status !== 'done') {
+      throw new NotFoundException('账单尚未解析完成');
+    }
+    if (!record.shareToken || record.shareToken !== token) {
+      throw new ForbiddenException('无权访问该记录');
+    }
+  }
+
   /**
    * Enrich raw summaryJson with derived fields (maskedIdNumber, gender, age, nativePlace)
    * from idNumber, mirroring StatementService.enrichSummary logic.
@@ -756,8 +776,16 @@ ${ui.userNotes ? ui.userNotes : '未提供补充信息'}
 
   async listReports(recordId: number, userId: number) {
     await this.assertOwnership(recordId, userId);
+    return this.findReportList(recordId);
+  }
 
-    const reports = await this.prisma.aiAnalysisReport.findMany({
+  async listSharedReports(recordId: number, token: string) {
+    await this.assertShareAccess(recordId, token);
+    return this.findReportList(recordId);
+  }
+
+  private async findReportList(recordId: number) {
+    return this.prisma.aiAnalysisReport.findMany({
       where: { queryRecordId: recordId },
       orderBy: { createdAt: 'desc' },
       select: {
@@ -767,13 +795,19 @@ ${ui.userNotes ? ui.userNotes : '未提供补充信息'}
         createdAt: true,
       },
     });
-
-    return reports;
   }
 
   async getReport(recordId: number, reportId: number, userId: number) {
     await this.assertOwnership(recordId, userId);
+    return this.findReport(recordId, reportId);
+  }
 
+  async getSharedReport(recordId: number, reportId: number, token: string) {
+    await this.assertShareAccess(recordId, token);
+    return this.findReport(recordId, reportId);
+  }
+
+  private async findReport(recordId: number, reportId: number) {
     const report = await this.prisma.aiAnalysisReport.findFirst({
       where: {
         id: reportId,

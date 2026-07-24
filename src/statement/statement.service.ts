@@ -571,18 +571,34 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     if (!(await this.isOwnerOrAdmin(record.userId, userId))) {
       throw new ForbiddenException('无权访问该记录');
     }
+    return this.buildRecordStatusPayload(recordId, record.status, record.summaryJson);
+  }
 
+  async getSharedRecordStatus(recordId: number, token: string) {
+    const record = await this.assertShareAccess(recordId, token);
+    return this.buildRecordStatusPayload(
+      recordId,
+      record.status,
+      record.summaryJson,
+    );
+  }
+
+  private buildRecordStatusPayload(
+    recordId: number,
+    status: string,
+    summaryJson: unknown,
+  ) {
     let progress = 0;
-    let stage = record.status;
+    let stage = status;
     let detail = '正在初始化解析任务...';
 
-    if (record.status === 'done') {
+    if (status === 'done') {
       progress = 100;
       detail = '解析完成';
-    } else if (record.status === 'failed') {
+    } else if (status === 'failed') {
       progress = 100;
       detail = '解析失败';
-    } else if (record.status === 'password_required') {
+    } else if (status === 'password_required') {
       progress = 100;
       detail = '账单文件受密码保护，请输入解压密码';
     } else {
@@ -603,14 +619,14 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     ];
 
     let error: string | null = null;
-    if (record.status === 'failed' && record.summaryJson) {
-      const summary = record.summaryJson as any;
+    if (status === 'failed' && summaryJson) {
+      const summary = summaryJson as any;
       error = summary.error || null;
     }
 
     return {
-      status: record.status,
-      ready: record.status === 'done',
+      status,
+      ready: status === 'done',
       progress,
       stage,
       detail,
@@ -843,6 +859,44 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async assertShareAccess(recordId: number, token: string) {
+    if (!token || typeof token !== 'string' || token.length < 8) {
+      throw new ForbiddenException('无权访问该记录');
+    }
+    const record = await this.prisma.queryRecord.findUnique({
+      where: { id: recordId },
+      select: {
+        userId: true,
+        shareToken: true,
+        status: true,
+        summaryJson: true,
+      },
+    });
+    if (!record) throw new NotFoundException('Record not found');
+    if (!record.shareToken || record.shareToken !== token) {
+      throw new ForbiddenException('无权访问该记录');
+    }
+    return record;
+  }
+
+  async ensureShareToken(recordId: number, userId: number): Promise<{ shareToken: string }> {
+    await this.assertRecordOwnership(recordId, userId);
+    const record = await this.prisma.queryRecord.findUnique({
+      where: { id: recordId },
+      select: { shareToken: true },
+    });
+    if (!record) throw new NotFoundException('Record not found');
+    if (record.shareToken) {
+      return { shareToken: record.shareToken };
+    }
+    const shareToken = crypto.randomBytes(24).toString('base64url');
+    await this.prisma.queryRecord.update({
+      where: { id: recordId },
+      data: { shareToken },
+    });
+    return { shareToken };
+  }
+
   private async isOwnerOrAdmin(
     recordUserId: number,
     userId: number,
@@ -1043,6 +1097,18 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     userId: number,
   ): Promise<{ isHighRisk: boolean }> {
     await this.assertRecordOwnership(id, userId);
+    return this.buildRiskStatus(id);
+  }
+
+  async getSharedRiskStatus(
+    id: number,
+    token: string,
+  ): Promise<{ isHighRisk: boolean }> {
+    await this.assertShareAccess(id, token);
+    return this.buildRiskStatus(id);
+  }
+
+  private async buildRiskStatus(id: number): Promise<{ isHighRisk: boolean }> {
     const record = await this.prisma.queryRecord.findUnique({
       where: { id },
       select: { summaryJson: true },
@@ -1060,6 +1126,22 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     userId: number,
   ): Promise<StatementResultBundle> {
     await this.assertRecordOwnership(id, userId);
+    return this.buildResultBundle(id, userId);
+  }
+
+  async getSharedResultBundle(
+    id: number,
+    token: string,
+  ): Promise<StatementResultBundle> {
+    const shared = await this.assertShareAccess(id, token);
+    // 用主人的自定义分类，保证分享视图与主人一致
+    return this.buildResultBundle(id, shared.userId);
+  }
+
+  private async buildResultBundle(
+    id: number,
+    classifyUserId: number,
+  ): Promise<StatementResultBundle> {
     const data = await this.getPersistedData(id);
     const summary = this.pickResultMeta(data.summary);
 
@@ -1087,7 +1169,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
 
     const classifiedTransactions = await this.classifyTransactionsForUser(
-      userId,
+      classifyUserId,
       data.transactions,
     );
 

@@ -4,6 +4,7 @@ import {
   Get,
   Delete,
   Param,
+  Query,
   UseInterceptors,
   UploadedFile,
   BadRequestException,
@@ -39,48 +40,9 @@ export class StatementController {
     return { id: result.id, isDuplicate: result.isDuplicate };
   }
 
-  @Post(':id/retry')
-  async retryWithPassword(
-    @Param('id') id: string,
-    @CurrentUserId() userId: number,
-    @Body('password') password?: string,
-  ) {
-    await this.statementService.retryWithPassword(
-      userId,
-      parseInt(id, 10),
-      password,
-    );
-    return { success: true };
-  }
-
   @Get('history')
   getHistory(@CurrentUserId() userId: number) {
     return this.statementService.getHistory(userId);
-  }
-
-  @Delete(':id')
-  deleteRecord(@Param('id') id: string, @CurrentUserId() userId: number) {
-    return this.statementService.deleteRecord(userId, parseInt(id, 10));
-  }
-
-  @Get(':id/status')
-  getStatus(@Param('id') id: string, @CurrentUserId() userId: number) {
-    return this.statementService.getRecordStatus(parseInt(id, 10), userId);
-  }
-
-  @Get(':id/counterparties')
-  getCounterparties(@Param('id') id: string, @CurrentUserId() userId: number) {
-    return this.statementService.getCounterparties(parseInt(id, 10), userId);
-  }
-
-  @Get(':id/risk-status')
-  getRiskStatus(@Param('id') id: string, @CurrentUserId() userId: number) {
-    return this.statementService.getRiskStatus(parseInt(id, 10), userId);
-  }
-
-  @Get(':id/result')
-  getResult(@Param('id') id: string, @CurrentUserId() userId: number) {
-    return this.statementService.getResultBundle(parseInt(id, 10), userId);
   }
 
   @Post('custom-category')
@@ -107,5 +69,87 @@ export class StatementController {
   @Get('custom-categories')
   async getCustomCategories(@CurrentUserId() userId: number) {
     return this.statementService.getUserCustomCategories(userId);
+  }
+
+  // --- Shared read-only routes (must be before :id routes) ---
+
+  @Get('shared/:id/status')
+  getSharedStatus(
+    @Param('id') id: string,
+    @Query('token') token: string,
+  ) {
+    return this.statementService.getSharedRecordStatus(
+      parseInt(id, 10),
+      token || '',
+    );
+  }
+
+  @Get('shared/:id/result')
+  getSharedResult(
+    @Param('id') id: string,
+    @Query('token') token: string,
+  ) {
+    return this.statementService.getSharedResultBundle(
+      parseInt(id, 10),
+      token || '',
+    );
+  }
+
+  @Get('shared/:id/risk-status')
+  getSharedRiskStatus(
+    @Param('id') id: string,
+    @Query('token') token: string,
+  ) {
+    return this.statementService.getSharedRiskStatus(
+      parseInt(id, 10),
+      token || '',
+    );
+  }
+
+  @Post(':id/share-token')
+  ensureShareToken(
+    @Param('id') id: string,
+    @CurrentUserId() userId: number,
+  ) {
+    return this.statementService.ensureShareToken(parseInt(id, 10), userId);
+  }
+
+  @Post(':id/retry')
+  async retryWithPassword(
+    @Param('id') id: string,
+    @CurrentUserId() userId: number,
+    @Body('password') password?: string,
+  ) {
+    await this.statementService.retryWithPassword(
+      userId,
+      parseInt(id, 10),
+      password,
+    );
+    return { success: true };
+  }
+
+  @Delete(':id')
+  deleteRecord(@Param('id') id: string, @CurrentUserId() userId: number) {
+    return this.statementService.deleteRecord(userId, parseInt(id, 10));
+  }
+
+  @Get(':id/status')
+  getStatus(@Param('id') id: string, @CurrentUserId() userId: number) {
+    return this.statementService.getRecordStatus(parseInt(id, 10), userId);
+  }
+
+  @Get(':id/counterparties')
+  getCounterparties(@Param('id') id: string, @CurrentUserId() userId: number) {
+    return this.statementService.getCounterparties(parseInt(id, 10), userId);
+  }
+
+  @Get(':id/risk-status')
+  getRiskStatus(@Param('id') id: string, @CurrentUserId() userId: number) {
+    return this.statementService.getRiskStatus(parseInt(id, 10), userId);
+  }
+
+  @Get(':id/result')
+  getResult(@Param('id') id: string, @CurrentUserId() userId: number) {
+    return this.statementService.getResultBundle(parseInt(id, 10), userId);
   }
 }

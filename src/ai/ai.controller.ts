@@ -3,6 +3,7 @@ import {
   Post,
   Get,
   Param,
+  Query,
   Body,
   UseGuards,
   HttpException,
@@ -42,6 +43,57 @@ export class AiController {
       throw new HttpException(
         { message: error.message || 'AI 分析失败，请稍后重试' },
         HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  // Shared read-only routes (before :id owner routes for clarity)
+
+  @Get('statements/shared/:id/reports')
+  async listSharedReports(
+    @Param('id') id: string,
+    @Query('token') token: string,
+  ) {
+    try {
+      const reports = await this.aiService.listSharedReports(
+        parseInt(id, 10),
+        token || '',
+      );
+      return { reports };
+    } catch (err: unknown) {
+      const error = err as Error & { status?: number; getStatus?: () => number };
+      const status =
+        typeof error.getStatus === 'function'
+          ? error.getStatus()
+          : error.status || HttpStatus.INTERNAL_SERVER_ERROR;
+      throw new HttpException(
+        { message: error.message || '获取分析报告列表失败' },
+        status,
+      );
+    }
+  }
+
+  @Get('statements/shared/:id/reports/:reportId')
+  async getSharedReport(
+    @Param('id') id: string,
+    @Param('reportId') reportId: string,
+    @Query('token') token: string,
+  ) {
+    try {
+      return await this.aiService.getSharedReport(
+        parseInt(id, 10),
+        parseInt(reportId, 10),
+        token || '',
+      );
+    } catch (err: unknown) {
+      const error = err as Error & { status?: number; getStatus?: () => number };
+      const status =
+        typeof error.getStatus === 'function'
+          ? error.getStatus()
+          : error.status || HttpStatus.INTERNAL_SERVER_ERROR;
+      throw new HttpException(
+        { message: error.message || '获取分析报告失败' },
+        status,
       );
     }
   }
