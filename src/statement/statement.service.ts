@@ -15,6 +15,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import * as ExcelJS from 'exceljs';
 import { PdfTextExtractor } from './pdf-text-extractor';
+import { ShareCodeService } from '../share-code/share-code.service';
 
 const DEFAULT_QUERY_SERVER_BASE = 'https://www.xinde8888.com/api/query_info';
 
@@ -110,6 +111,7 @@ export interface StatementResultMeta {
 export interface StatementResultBundle {
   summary: StatementResultMeta;
   raw: Transaction[];
+  shareCode?: string;
 }
 
 @Injectable()
@@ -122,7 +124,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
   >();
   private readonly pdfExtractor = new PdfTextExtractor();
 
-  constructor(private prisma: PrismaService) {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly shareCodeService: ShareCodeService,
+  ) {
     if (!fs.existsSync(this.uploadsDir)) {
       fs.mkdirSync(this.uploadsDir, { recursive: true });
     }
@@ -571,25 +576,28 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     if (!(await this.isOwnerOrAdmin(record.userId, userId))) {
       throw new ForbiddenException('无权访问该记录');
     }
-    return this.buildRecordStatusPayload(recordId, record.status, record.summaryJson);
-  }
-
-  async getSharedRecordStatus(recordId: number, token: string) {
-    const record = await this.assertShareAccess(recordId, token);
-    return this.buildRecordStatusPayload(
+    const statusPayload = this.buildRecordStatusPayload(
       recordId,
       record.status,
       record.summaryJson,
     );
+    return {
+      ...statusPayload,
+      shareCode: this.shareCodeService.createResultCode(userId, recordId),
+    };
   }
 
-  async getShareByCodeStatus(sc: string) {
-    const record = await this.findRecordByShareCode(sc);
-    return this.buildRecordStatusPayload(
+  async getShareByCodeStatus(code: string, openerId: number) {
+    const record = await this.resolveSharedRecord(code);
+    const statusPayload = this.buildRecordStatusPayload(
       record.id,
       record.status,
       record.summaryJson,
     );
+    return {
+      ...statusPayload,
+      shareCode: this.shareCodeService.createResultCode(openerId, record.id),
+    };
   }
 
   private buildRecordStatusPayload(
@@ -868,70 +876,29 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async assertShareAccess(recordId: number, token: string) {
-    if (!token || typeof token !== 'string' || token.length < 8) {
-      throw new ForbiddenException('分享凭证无效');
+  private async resolveSharedRecord(code: string) {
+    const payload = this.shareCodeService.decode(code);
+    if (payload.queryRecordId == null) {
+      throw new ForbiddenException('该分享链接不包含账单');
     }
     const record = await this.prisma.queryRecord.findUnique({
-      where: { id: recordId },
+      where: { id: payload.queryRecordId },
       select: {
         id: true,
         userId: true,
-        shareToken: true,
         status: true,
         summaryJson: true,
+        createdAt: true,
       },
     });
     if (!record) throw new NotFoundException('记录已被删除');
-    if (!record.shareToken || record.shareToken !== token) {
-      throw new ForbiddenException('分享凭证无效');
+    if (record.status !== 'done') {
+      throw new NotFoundException('账单尚未解析完成');
+    }
+    if (record.createdAt.getTime() < Date.now() - 3 * 24 * 60 * 60 * 1000) {
+      throw new NotFoundException('分享链接已过期');
     }
     return record;
-  }
-
-  /** 按分享码查找记录（码在 path 上，不依赖 id） */
-  private async findRecordByShareCode(sc: string) {
-    const code = (sc || '').trim();
-    if (!code || code.length < 8) {
-      throw new ForbiddenException('分享凭证无效');
-    }
-    const record = await this.prisma.queryRecord.findUnique({
-      where: { shareToken: code },
-      select: {
-        id: true,
-        userId: true,
-        shareToken: true,
-        status: true,
-        summaryJson: true,
-      },
-    });
-    if (!record) {
-      // 码不存在：可能从未生成、或记录已删
-      throw new NotFoundException('记录已被删除');
-    }
-    return record;
-  }
-
-  async ensureShareToken(
-    recordId: number,
-    userId: number,
-  ): Promise<{ shareToken: string }> {
-    await this.assertRecordOwnership(recordId, userId);
-    const record = await this.prisma.queryRecord.findUnique({
-      where: { id: recordId },
-      select: { shareToken: true },
-    });
-    if (!record) throw new NotFoundException('Record not found');
-    if (record.shareToken) {
-      return { shareToken: record.shareToken };
-    }
-    // ~16 字符 URL 安全码
-    const shareToken = crypto.randomBytes(12).toString('base64url');
-    await this.prisma.queryRecord.update({
-      where: { id: recordId },
-      data: { shareToken },
-    });
-    return { shareToken };
   }
 
   private async isOwnerOrAdmin(
@@ -1137,16 +1104,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     return this.buildRiskStatus(id);
   }
 
-  async getSharedRiskStatus(
-    id: number,
-    token: string,
+  async getShareByCodeRiskStatus(
+    code: string,
   ): Promise<{ isHighRisk: boolean }> {
-    await this.assertShareAccess(id, token);
-    return this.buildRiskStatus(id);
-  }
-
-  async getShareByCodeRiskStatus(sc: string): Promise<{ isHighRisk: boolean }> {
-    const record = await this.findRecordByShareCode(sc);
+    const record = await this.resolveSharedRecord(code);
     return this.buildRiskStatus(record.id);
   }
 
@@ -1168,21 +1129,23 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     userId: number,
   ): Promise<StatementResultBundle> {
     await this.assertRecordOwnership(id, userId);
-    return this.buildResultBundle(id, userId);
+    const bundle = await this.buildResultBundle(id, userId);
+    return {
+      ...bundle,
+      shareCode: this.shareCodeService.createResultCode(userId, id),
+    };
   }
 
-  async getSharedResultBundle(
-    id: number,
-    token: string,
+  async getShareByCodeResult(
+    code: string,
+    openerId: number,
   ): Promise<StatementResultBundle> {
-    const shared = await this.assertShareAccess(id, token);
-    // 用主人的自定义分类，保证分享视图与主人一致
-    return this.buildResultBundle(id, shared.userId);
-  }
-
-  async getShareByCodeResult(sc: string): Promise<StatementResultBundle> {
-    const record = await this.findRecordByShareCode(sc);
-    return this.buildResultBundle(record.id, record.userId);
+    const record = await this.resolveSharedRecord(code);
+    const bundle = await this.buildResultBundle(record.id, record.userId);
+    return {
+      ...bundle,
+      shareCode: this.shareCodeService.createResultCode(openerId, record.id),
+    };
   }
 
   private async buildResultBundle(

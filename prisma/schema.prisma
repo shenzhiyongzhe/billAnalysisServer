@@ -36,12 +36,20 @@ model WechatUser {
 }
 
 model ShareRecord {
-  id        Int      @id @default(autoincrement())
-  sharerId  Int
-  sharer    WechatUser @relation("SharerRelation", fields: [sharerId], references: [id], onDelete: Cascade)
-  openerId  Int?
-  opener    WechatUser? @relation("OpenerRelation", fields: [openerId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
+  id            Int          @id @default(autoincrement())
+  sharerId      Int
+  sharer        WechatUser   @relation("SharerRelation", fields: [sharerId], references: [id], onDelete: Cascade)
+  openerId      Int?
+  opener        WechatUser?  @relation("OpenerRelation", fields: [openerId], references: [id], onDelete: Cascade)
+  queryRecordId Int?
+  queryRecord   QueryRecord? @relation(fields: [queryRecordId], references: [id], onDelete: SetNull)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([sharerId])
+  @@index([openerId])
+  @@index([queryRecordId])
+  @@index([createdAt])
 }
 
 model UserSession {
@@ -77,9 +85,9 @@ model QueryRecord {
   transactionsJson Json?
   startDate       DateTime?
   endDate         DateTime?
-  shareToken      String?  @unique // 分享只读访问令牌，首次 ensure 时生成
   createdAt       DateTime @default(now())
   aiReports       AiAnalysisReport[]
+  shareRecords    ShareRecord[]
   unsupportedFormatLogs UnsupportedFormatLog[]
 }
 

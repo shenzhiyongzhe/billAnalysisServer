@@ -48,10 +48,10 @@ export class AiController {
 
   // Share-by-code read-only (before :id owner routes)
 
-  @Get('statements/share/:sc/reports')
-  async listShareByCodeReports(@Param('sc') sc: string) {
+  @Get('statements/share/:code/reports')
+  async listShareByCodeReports(@Param('code') code: string) {
     try {
-      const reports = await this.aiService.listShareByCodeReports(sc || '');
+      const reports = await this.aiService.listShareByCodeReports(code || '');
       return { reports };
     } catch (err: unknown) {
       const error = err as Error & { status?: number; getStatus?: () => number };
@@ -66,14 +66,14 @@ export class AiController {
     }
   }
 
-  @Get('statements/share/:sc/reports/:reportId')
+  @Get('statements/share/:code/reports/:reportId')
   async getShareByCodeReport(
-    @Param('sc') sc: string,
+    @Param('code') code: string,
     @Param('reportId') reportId: string,
   ) {
     try {
       return await this.aiService.getShareByCodeReport(
-        sc || '',
+        code || '',
         parseInt(reportId, 10),
       );
     } catch (err: unknown) {

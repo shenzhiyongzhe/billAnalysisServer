@@ -7,6 +7,7 @@ import { JwtService } from '@nestjs/jwt';
 import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../prisma.service';
 import { AuthTokensResponse, PublicUser } from './public-user.dto';
+import { ShareCodeService } from '../share-code/share-code.service';
 
 function parseExpiresToSeconds(
   expires: string | undefined,
@@ -38,8 +39,9 @@ export class AuthService {
   private readonly refreshExpiresSeconds: number;
 
   constructor(
-    private prisma: PrismaService,
-    private jwtService: JwtService,
+    private readonly prisma: PrismaService,
+    private readonly jwtService: JwtService,
+    private readonly shareCodeService: ShareCodeService,
   ) {
     this.accessExpiresIn = process.env.JWT_ACCESS_EXPIRES_IN || '2h';
     this.accessExpiresSeconds = parseExpiresToSeconds(
@@ -81,6 +83,7 @@ export class AuthService {
       monthlyCardExpiry: user.monthlyCardExpiry
         ? user.monthlyCardExpiry.toISOString()
         : null,
+      shareCode: this.shareCodeService.createIndexCode(user.id),
     };
   }
 

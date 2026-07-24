@@ -1,13 +1,24 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { StatementService, Transaction } from './statement.service';
 import { PrismaService } from '../prisma.service';
+import { ShareCodeService } from '../share-code/share-code.service';
 
 describe('StatementService', () => {
   let service: StatementService;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [StatementService, { provide: PrismaService, useValue: {} }],
+      providers: [
+        StatementService,
+        { provide: PrismaService, useValue: {} },
+        {
+          provide: ShareCodeService,
+          useValue: {
+            createResultCode: jest.fn(),
+            decode: jest.fn(),
+          },
+        },
+      ],
     }).compile();
 
     service = module.get<StatementService>(StatementService);

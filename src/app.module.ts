@@ -11,10 +11,12 @@ import { SystemConfigModule } from './system-config/system-config.module';
 import { StatisticsModule } from './statistics/statistics.module';
 import { AiModule } from './ai/ai.module';
 import { FeedbackModule } from './feedback/feedback.module';
+import { ShareCodeModule } from './share-code/share-code.module';
 
 @Module({
   imports: [
     PrismaModule,
+    ShareCodeModule,
     StatementModule,
     AuthModule,
     AdminModule,

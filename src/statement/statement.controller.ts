@@ -72,27 +72,25 @@ export class StatementController {
 
   // --- Share-by-code read-only (must be before :id routes) ---
 
-  @Get('share/:sc/status')
-  getShareByCodeStatus(@Param('sc') sc: string) {
-    return this.statementService.getShareByCodeStatus(sc || '');
-  }
-
-  @Get('share/:sc/result')
-  getShareByCodeResult(@Param('sc') sc: string) {
-    return this.statementService.getShareByCodeResult(sc || '');
-  }
-
-  @Get('share/:sc/risk-status')
-  getShareByCodeRiskStatus(@Param('sc') sc: string) {
-    return this.statementService.getShareByCodeRiskStatus(sc || '');
-  }
-
-  @Post(':id/share-token')
-  ensureShareToken(
-    @Param('id') id: string,
+  @Get('share/:code/status')
+  getShareByCodeStatus(
+    @Param('code') code: string,
     @CurrentUserId() userId: number,
   ) {
-    return this.statementService.ensureShareToken(parseInt(id, 10), userId);
+    return this.statementService.getShareByCodeStatus(code || '', userId);
+  }
+
+  @Get('share/:code/result')
+  getShareByCodeResult(
+    @Param('code') code: string,
+    @CurrentUserId() userId: number,
+  ) {
+    return this.statementService.getShareByCodeResult(code || '', userId);
+  }
+
+  @Get('share/:code/risk-status')
+  getShareByCodeRiskStatus(@Param('code') code: string) {
+    return this.statementService.getShareByCodeRiskStatus(code || '');
   }
 
   @Post(':id/retry')

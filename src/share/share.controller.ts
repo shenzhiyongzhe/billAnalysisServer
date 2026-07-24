@@ -1,9 +1,9 @@
 import {
+  BadRequestException,
   Controller,
   Post,
   Body,
   UseGuards,
-  ParseIntPipe,
 } from '@nestjs/common';
 import { ShareService } from './share.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -17,8 +17,11 @@ export class ShareController {
   @Post('open')
   async recordOpen(
     @CurrentUserId() userId: number,
-    @Body('sharerId', ParseIntPipe) sharerId: number,
+    @Body('code') code?: string,
   ) {
-    return this.shareService.recordShareOpen(sharerId, userId);
+    if (!code || typeof code !== 'string') {
+      throw new BadRequestException('缺少分享码');
+    }
+    return this.shareService.recordShareOpen(code, userId);
   }
 }

@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SystemConfigService } from '../system-config/system-config.service';
+import { ShareCodeService } from '../share-code/share-code.service';
 
 interface Transaction {
   date: string;
@@ -104,8 +105,9 @@ export class AiService {
   private readonly logger = new Logger(AiService.name);
 
   constructor(
-    private prisma: PrismaService,
-    private systemConfigService: SystemConfigService,
+    private readonly prisma: PrismaService,
+    private readonly systemConfigService: SystemConfigService,
+    private readonly shareCodeService: ShareCodeService,
   ) {}
 
   private async assertOwnership(
@@ -130,38 +132,21 @@ export class AiService {
     }
   }
 
-  private async assertShareAccess(
-    recordId: number,
-    token: string,
-  ): Promise<void> {
-    if (!token || typeof token !== 'string' || token.length < 8) {
-      throw new ForbiddenException('分享凭证无效');
+  private async resolveSharedRecord(code: string) {
+    const payload = this.shareCodeService.decode(code);
+    if (payload.queryRecordId == null) {
+      throw new ForbiddenException('该分享链接不包含账单');
     }
     const record = await this.prisma.queryRecord.findUnique({
-      where: { id: recordId },
-      select: { shareToken: true, status: true },
+      where: { id: payload.queryRecordId },
+      select: { id: true, status: true, createdAt: true },
     });
     if (!record) throw new NotFoundException('记录已被删除');
     if (record.status !== 'done') {
       throw new NotFoundException('账单尚未解析完成');
     }
-    if (!record.shareToken || record.shareToken !== token) {
-      throw new ForbiddenException('分享凭证无效');
-    }
-  }
-
-  private async findRecordByShareCode(sc: string) {
-    const code = (sc || '').trim();
-    if (!code || code.length < 8) {
-      throw new ForbiddenException('分享凭证无效');
-    }
-    const record = await this.prisma.queryRecord.findUnique({
-      where: { shareToken: code },
-      select: { id: true, shareToken: true, status: true },
-    });
-    if (!record) throw new NotFoundException('记录已被删除');
-    if (record.status !== 'done') {
-      throw new NotFoundException('账单尚未解析完成');
+    if (record.createdAt.getTime() < Date.now() - 3 * 24 * 60 * 60 * 1000) {
+      throw new NotFoundException('分享链接已过期');
     }
     return record;
   }
@@ -795,13 +780,8 @@ ${ui.userNotes ? ui.userNotes : '未提供补充信息'}
     return this.findReportList(recordId);
   }
 
-  async listSharedReports(recordId: number, token: string) {
-    await this.assertShareAccess(recordId, token);
-    return this.findReportList(recordId);
-  }
-
-  async listShareByCodeReports(sc: string) {
-    const record = await this.findRecordByShareCode(sc);
+  async listShareByCodeReports(code: string) {
+    const record = await this.resolveSharedRecord(code);
     return this.findReportList(record.id);
   }
 
@@ -823,13 +803,8 @@ ${ui.userNotes ? ui.userNotes : '未提供补充信息'}
     return this.findReport(recordId, reportId);
   }
 
-  async getSharedReport(recordId: number, reportId: number, token: string) {
-    await this.assertShareAccess(recordId, token);
-    return this.findReport(recordId, reportId);
-  }
-
-  async getShareByCodeReport(sc: string, reportId: number) {
-    const record = await this.findRecordByShareCode(sc);
+  async getShareByCodeReport(code: string, reportId: number) {
+    const record = await this.resolveSharedRecord(code);
     return this.findReport(record.id, reportId);
   }
 
