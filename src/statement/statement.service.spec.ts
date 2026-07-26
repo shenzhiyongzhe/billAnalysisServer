@@ -894,4 +894,202 @@ describe('StatementService', () => {
       });
     });
   });
+
+  describe('parseXlsxFile WeChat 交易明细证明', () => {
+    const ExcelJS = require('exceljs');
+
+    async function buildProofWorkbookBuffer(): Promise<Buffer> {
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet('Table 1');
+      sheet.addRow(['编号：20260725175333156686382462058512']);
+      sheet.addRow([
+        '微信支付交易明细证明\n兹证明：王钻英（居民身份证：441324197812103649），在其微信号：wz103649中的交易明细信息如下：\n币种：人民币 / 单位：元',
+      ]);
+      sheet.addRow([
+        '交易明细对应时间段',
+        '2025-07-25 00:00:00 至 2026-07-25 17:53:33',
+      ]);
+      sheet.addRow(['具体交易明细']);
+      sheet.addRow([
+        '交易单号',
+        '交易时间',
+        '交易类型',
+        '收/支/其他',
+        '交易方式',
+        '金额(元)',
+        '交易对方',
+        '商户单号',
+      ]);
+      // Mimic real proof files: most cells are Excel richText with embedded newlines
+      const rt = (text: string) => ({
+        richText: [{ font: { size: 9, name: 'PMingLiU' }, text }],
+      });
+      sheet.addRow([
+        rt('530100033650962026072541\n69749808'),
+        rt('2026-07-25\n17:14:15'),
+        rt('转账'),
+        rt('支出'),
+        rt('零钱'),
+        10000,
+        rt('文 (文)'),
+        rt('10000500012026072\n50333957150776'),
+      ]);
+      sheet.addRow([
+        rt('100005000120260725033435\n3140491'),
+        rt('2026-07-25\n17:14:01'),
+        rt('转账'),
+        rt('收入'),
+        rt('/'),
+        10000,
+        rt('女仔 (奕心)'),
+        rt('/'),
+      ]);
+      sheet.addRow([
+        rt('110260723100057311867153\n420516'),
+        rt('2026-07-23\n23:24:27'),
+        rt('零钱充值'),
+        rt('其他'),
+        rt('广东华润银行储蓄卡(3280)'),
+        20,
+        rt('广东华润银行(3280)'),
+        rt('/'),
+      ]);
+      sheet.addRow([]);
+      sheet.addRow([
+        rt('420000315220260724444250\n4132'),
+        rt('2026-07-24\n20:10:04'),
+        rt('商户消费'),
+        rt('支出'),
+        rt('零钱'),
+        6,
+        rt('八借充电'),
+        rt('Mnb9527QVVC9Suh'),
+      ]);
+      sheet.addRow(['说明：']);
+      sheet.addRow([
+        '1. 本《微信支付交易明细证明》仅证明：在用户选择的交易类型和时间段内...',
+      ]);
+      sheet.addRow(['财付通支付科技有限公司\n盖章']);
+
+      const arrayBuffer = await workbook.xlsx.writeBuffer();
+      return Buffer.from(arrayBuffer);
+    }
+
+    it('parses proof xlsx metadata, directions, newline dates, and skips footer', async () => {
+      const buffer = await buildProofWorkbookBuffer();
+      const res = await (service as any).parseXlsxFile(buffer);
+
+      expect(res.summary.source).toBe('微信');
+      expect(res.summary.name).toBe('王钻英');
+      expect(res.summary.idNumber).toBe('441324197812103649');
+      expect(res.summary.startDate).toBe('2025-07-25');
+      expect(res.summary.endDate).toBe('2026-07-25');
+      expect(res.transactions).toHaveLength(4);
+
+      // newest first
+      expect(res.transactions[0]).toMatchObject({
+        date: '2026-07-25 17:14:15',
+        type: '支出',
+        amount: 10000,
+        counterparty: '文 (文)',
+        bizType: '转账',
+        product: '',
+      });
+      expect(res.transactions[1]).toMatchObject({
+        date: '2026-07-25 17:14:01',
+        type: '收入',
+        amount: 10000,
+        counterparty: '女仔 (奕心)',
+        bizType: '转账',
+      });
+      expect(res.transactions[2]).toMatchObject({
+        date: '2026-07-24 20:10:04',
+        type: '支出',
+        amount: 6,
+        counterparty: '八借充电',
+        bizType: '商户消费',
+      });
+      expect(res.transactions[3]).toMatchObject({
+        date: '2026-07-23 23:24:27',
+        type: '不计收支',
+        amount: 20,
+        counterparty: '广东华润银行(3280)',
+        bizType: '零钱充值',
+      });
+
+      expect(res.summary.totalIncome).toBe(10000);
+      expect(res.summary.totalExpenditure).toBe(10006);
+    });
+
+    it('still parses standard WeChat bill-export xlsx', async () => {
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet('Sheet1');
+      sheet.addRow(['微信支付账单明细']);
+      sheet.addRow(['微信昵称：[SuperAlan]']);
+      sheet.addRow([
+        '起始时间：[2026-04-01 00:00:00] 终止时间：[2026-07-01 13:26:48]',
+      ]);
+      sheet.addRow([
+        '交易时间',
+        '交易类型',
+        '交易对方',
+        '商品',
+        '收/支',
+        '金额(元)',
+        '支付方式',
+        '当前状态',
+        '交易单号',
+        '商户单号',
+        '备注',
+      ]);
+      sheet.addRow([
+        new Date(Date.UTC(2026, 5, 30, 5, 50, 25)), // +8h -> 2026-06-30 13:50:25
+        '商户消费',
+        '农家味小湘厨鸣乐店',
+        '农家味小湘厨鸣乐店-order',
+        '支出',
+        19.51,
+        '零钱通',
+        '支付成功',
+        '4200003114202606304979873207',
+        '83620260630665569479',
+        '/',
+      ]);
+      sheet.addRow([
+        new Date(Date.UTC(2026, 5, 30, 0, 32, 40)), // +8h -> 2026-06-30 08:32:40
+        '转账',
+        '张三',
+        '/',
+        '收入',
+        100,
+        '零钱',
+        '已收钱',
+        '1000050001',
+        '/',
+        '/',
+      ]);
+
+      const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+      const res = await (service as any).parseXlsxFile(buffer);
+
+      expect(res.summary.name).toBe('SuperAlan');
+      expect(res.summary.startDate).toBe('2026-04-01');
+      expect(res.summary.endDate).toBe('2026-07-01');
+      expect(res.transactions).toHaveLength(2);
+      expect(res.transactions[0]).toMatchObject({
+        date: '2026-06-30 13:50:25',
+        type: '支出',
+        amount: 19.51,
+        counterparty: '农家味小湘厨鸣乐店',
+        bizType: '商户消费',
+        product: '农家味小湘厨鸣乐店-order',
+      });
+      expect(res.transactions[1]).toMatchObject({
+        date: '2026-06-30 08:32:40',
+        type: '收入',
+        amount: 100,
+        counterparty: '张三',
+      });
+    });
+  });
 });

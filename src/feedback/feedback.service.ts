@@ -338,6 +338,18 @@ export class FeedbackService {
     };
   }
 
+  async deleteClientError(id: number) {
+    const existing = await this.prisma.clientErrorLog.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!existing) {
+      throw new NotFoundException('错误日志不存在');
+    }
+    await this.prisma.clientErrorLog.delete({ where: { id } });
+    return { success: true, id };
+  }
+
   async listUnsupportedFormats(
     search?: string,
     fileExt?: string,
@@ -463,6 +475,35 @@ export class FeedbackService {
       where: { id },
       data,
     });
+  }
+
+  async deleteUnsupportedFormat(id: number) {
+    const existing = await this.prisma.unsupportedFormatLog.findUnique({
+      where: { id },
+      select: { id: true, storedFileName: true },
+    });
+    if (!existing) {
+      throw new NotFoundException('记录不存在');
+    }
+
+    await this.prisma.unsupportedFormatLog.delete({ where: { id } });
+
+    if (existing.storedFileName) {
+      const filePath = path.join(
+        process.cwd(),
+        'uploads',
+        existing.storedFileName,
+      );
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      } catch {
+        // 文件可能已被清理，忽略磁盘删除失败
+      }
+    }
+
+    return { success: true, id };
   }
 
   async getUnsupportedFormatDownload(id: number) {

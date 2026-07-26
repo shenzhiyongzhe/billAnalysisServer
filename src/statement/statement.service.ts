@@ -2595,6 +2595,37 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     return '其他';
   }
 
+  private cellText(val: unknown, joinNewlinesWith = ''): string {
+    if (val == null) return '';
+    if (typeof val === 'string') {
+      return val.replace(/\r?\n/g, joinNewlinesWith).trim();
+    }
+    if (typeof val === 'number' || typeof val === 'boolean') {
+      return String(val);
+    }
+    if (val instanceof Date) {
+      return val.toISOString();
+    }
+    if (typeof val === 'object' && val !== null && 'text' in val) {
+      return this.cellText((val as { text: unknown }).text, joinNewlinesWith);
+    }
+    if (typeof val === 'object' && val !== null && 'result' in val) {
+      return this.cellText(
+        (val as { result: unknown }).result,
+        joinNewlinesWith,
+      );
+    }
+    if (typeof val === 'object' && val !== null && 'richText' in val) {
+      const rich = (val as { richText: Array<{ text?: string }> }).richText;
+      return rich
+        .map((t) => t.text || '')
+        .join('')
+        .replace(/\r?\n/g, joinNewlinesWith)
+        .trim();
+    }
+    return String(val).replace(/\r?\n/g, joinNewlinesWith).trim();
+  }
+
   private async parseXlsxFile(buffer: Buffer): Promise<StatementData> {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(buffer as any);
@@ -2604,36 +2635,80 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
 
     let name = '未知';
+    let idNumber = '';
     let startDate = '';
     let endDate = '';
     let headerRowIndex = -1;
+    let isProofFormat = false;
 
     // 扫描前 50 行以寻找元数据和表头所在行
     const limit = Math.min(50, worksheet.rowCount);
     for (let i = 1; i <= limit; i++) {
       const row = worksheet.getRow(i);
-      const firstCellVal = row.getCell(1).value;
-      if (typeof firstCellVal === 'string') {
-        if (firstCellVal.includes('微信昵称：')) {
-          const nameMatch = firstCellVal.match(/微信昵称：\[?(.*?)\]?$/);
-          if (nameMatch) {
-            name = nameMatch[1].replace(/^\[|\]$/g, '');
-          }
+      const firstCellVal = this.cellText(row.getCell(1).value, ' ');
+      const rowTexts: string[] = [];
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        const text = this.cellText(cell.value, ' ');
+        if (text) rowTexts.push(text);
+      });
+      const rowJoined = rowTexts.join(' ');
+
+      if (
+        rowJoined.includes('微信支付交易明细证明') ||
+        firstCellVal.includes('兹证明：')
+      ) {
+        isProofFormat = true;
+      }
+
+      if (firstCellVal.includes('微信昵称：')) {
+        const nameMatch = firstCellVal.match(/微信昵称：\[?(.*?)\]?$/);
+        if (nameMatch) {
+          name = nameMatch[1].replace(/^\[|\]$/g, '');
         }
-        if (firstCellVal.includes('起始时间：')) {
-          const rangeMatch = firstCellVal.match(
-            /起始时间：\[?(.*?)\]?\s+终止时间：\[?(.*?)\]?$/,
-          );
-          if (rangeMatch) {
-            const startClean = rangeMatch[1].replace(/^\[|\]$/g, '');
-            const endClean = rangeMatch[2].replace(/^\[|\]$/g, '');
-            startDate = startClean.split(' ')[0];
-            endDate = endClean.split(' ')[0];
-          }
+      }
+
+      if (firstCellVal.includes('兹证明：')) {
+        const nameMatch = firstCellVal.match(
+          /兹证明：(.*?)\（居民身份证：(.*?)\）/,
+        );
+        if (nameMatch) {
+          name = nameMatch[1];
+          idNumber = nameMatch[2];
         }
-        if (firstCellVal.trim() === '交易时间') {
-          headerRowIndex = i;
+      }
+
+      if (firstCellVal.includes('起始时间：')) {
+        const rangeMatch = firstCellVal.match(
+          /起始时间：\[?(.*?)\]?\s+终止时间：\[?(.*?)\]?$/,
+        );
+        if (rangeMatch) {
+          const startClean = rangeMatch[1].replace(/^\[|\]$/g, '');
+          const endClean = rangeMatch[2].replace(/^\[|\]$/g, '');
+          startDate = startClean.split(' ')[0];
+          endDate = endClean.split(' ')[0];
         }
+      }
+
+      if (firstCellVal.includes('交易明细对应时间段')) {
+        const rangeText = this.cellText(row.getCell(2).value, ' ');
+        const rangeMatch = rangeText.match(
+          /(\d{4}-\d{2}-\d{2}).*?至\s*(\d{4}-\d{2}-\d{2})/,
+        );
+        if (rangeMatch) {
+          startDate = rangeMatch[1];
+          endDate = rangeMatch[2];
+        }
+      }
+
+      // 账单明细：首列为「交易时间」；交易明细证明：含「交易单号」+「交易时间」
+      if (firstCellVal === '交易时间') {
+        headerRowIndex = i;
+      } else if (
+        rowTexts.includes('交易单号') &&
+        rowTexts.includes('交易时间')
+      ) {
+        headerRowIndex = i;
+        isProofFormat = true;
       }
     }
 
@@ -2647,11 +2722,15 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const headerRow = worksheet.getRow(headerRowIndex);
     const colMap: { [key: string]: number } = {};
     headerRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-      const val = cell.value;
-      if (typeof val === 'string') {
-        colMap[val.trim()] = colNumber;
+      const val = this.cellText(cell.value);
+      if (val) {
+        colMap[val] = colNumber;
       }
     });
+
+    if (!colMap['收/支'] && colMap['收/支/其他']) {
+      colMap['收/支'] = colMap['收/支/其他'];
+    }
 
     const requiredHeaders = ['交易时间', '收/支', '金额(元)', '交易对方'];
     for (const req of requiredHeaders) {
@@ -2663,11 +2742,32 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const formatWechatExcelDate = (
       cellVal: any,
     ): { dateStr: string; monthStr: string } => {
+      // 交易明细证明：日期多为 richText/字符串（已含北京时间，可能含换行），直接规范化
+      if (isProofFormat) {
+        const normalized = this.cellText(cellVal, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        const match = normalized.match(
+          /^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})$/,
+        );
+        if (match) {
+          const dateStr = `${match[1]} ${match[2]}`;
+          return { dateStr, monthStr: match[1].substring(0, 7) };
+        }
+        const partial = normalized.match(
+          /^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})$/,
+        );
+        if (partial) {
+          const dateStr = `${partial[1]} ${partial[2]}:00`;
+          return { dateStr, monthStr: partial[1].substring(0, 7) };
+        }
+      }
+
       let dateObj: Date;
       if (cellVal instanceof Date) {
         dateObj = cellVal;
       } else if (typeof cellVal === 'string') {
-        dateObj = new Date(cellVal);
+        dateObj = new Date(cellVal.replace(/\r?\n/g, ' ').trim());
       } else if (
         cellVal &&
         typeof cellVal === 'object' &&
@@ -2702,30 +2802,35 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const transactions: Transaction[] = [];
     for (let i = headerRowIndex + 1; i <= worksheet.rowCount; i++) {
       const row = worksheet.getRow(i);
+      const firstCellText = this.cellText(row.getCell(1).value, ' ');
+      if (
+        firstCellText.startsWith('说明') ||
+        firstCellText.startsWith('财付通')
+      ) {
+        break;
+      }
+
       const dateCellVal = row.getCell(colMap['交易时间']).value;
       if (!dateCellVal) continue; // 跳过空行
 
       const { dateStr, monthStr } = formatWechatExcelDate(dateCellVal);
       if (!dateStr) continue;
 
-      const bizType = String(
-        row.getCell(colMap['交易类型'] || 2).value || '',
-      ).trim();
-      const counterparty = String(
-        row.getCell(colMap['交易对方'] || 3).value || '未知',
-      ).trim();
-      const product = String(
-        row.getCell(colMap['商品'] || 4).value || '',
-      ).trim();
-      const typeStr = String(
-        row.getCell(colMap['收/支'] || 5).value || '',
-      ).trim();
+      const bizType = colMap['交易类型']
+        ? this.cellText(row.getCell(colMap['交易类型']).value)
+        : '';
+      const counterparty =
+        this.cellText(row.getCell(colMap['交易对方']).value) || '未知';
+      const product = colMap['商品']
+        ? this.cellText(row.getCell(colMap['商品']).value)
+        : '';
+      const typeStr = this.cellText(row.getCell(colMap['收/支']).value);
 
       let type: '收入' | '支出' | '不计收支' = '不计收支';
       if (typeStr === '收入') type = '收入';
       else if (typeStr === '支出') type = '支出';
 
-      const amountVal = row.getCell(colMap['金额(元)'] || 6).value;
+      const amountVal = row.getCell(colMap['金额(元)']).value;
       const amount = Number(amountVal) || 0;
 
       transactions.push({
@@ -2784,7 +2889,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         id: '',
         source: '微信',
         name,
-        idNumber: '',
+        idNumber,
         cardNumber: '',
         startDate,
         endDate,

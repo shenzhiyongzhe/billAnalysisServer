@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -97,6 +98,12 @@ export class FeedbackController {
     );
   }
 
+  @Delete('admin/client-errors/:id')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  async deleteClientError(@Param('id', ParseIntPipe) id: number) {
+    return this.feedbackService.deleteClientError(id);
+  }
+
   @Get('admin/unsupported-formats')
   @UseGuards(JwtAuthGuard, AdminGuard)
   async listUnsupportedFormats(
@@ -124,6 +131,12 @@ export class FeedbackController {
     @Body() body: { status?: string; adminNote?: string },
   ) {
     return this.feedbackService.updateUnsupportedFormat(id, body);
+  }
+
+  @Delete('admin/unsupported-formats/:id')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  async deleteUnsupportedFormat(@Param('id', ParseIntPipe) id: number) {
+    return this.feedbackService.deleteUnsupportedFormat(id);
   }
 
   @Get('admin/unsupported-formats/:id/download')
