@@ -38,6 +38,16 @@ export class FeedbackController {
     return this.feedbackService.createFeedback(userId, body);
   }
 
+  @Get('feedback')
+  @UseGuards(JwtAuthGuard)
+  async listPublicFeedback(
+    @CurrentUserId() userId: number,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.feedbackService.listPublicFeedback(userId, page, limit);
+  }
+
   @Post('client-errors')
   @UseGuards(OptionalJwtAuthGuard)
   async reportClientErrors(

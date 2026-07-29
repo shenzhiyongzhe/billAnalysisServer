@@ -158,6 +158,65 @@ export class FeedbackService {
     return { accepted: result.count };
   }
 
+  /** 用户端公开列表：不含联系方式 / 诊断信息 / 管理员备注 */
+  async listPublicFeedback(
+    viewerUserId: number,
+    pageStr?: string,
+    limitStr?: string,
+  ) {
+    const { page, limit, skip } = this.parsePage(pageStr, limitStr);
+    const where: Prisma.FeedbackReportWhereInput = {
+      userId: { not: viewerUserId },
+    };
+
+    const [items, total] = await Promise.all([
+      this.prisma.feedbackReport.findMany({
+        where,
+        select: {
+          id: true,
+          category: true,
+          content: true,
+          status: true,
+          createdAt: true,
+          contextJson: true,
+          user: {
+            select: { nickname: true, displayId: true },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.feedbackReport.count({ where }),
+    ]);
+
+    return {
+      items: items.map((item) => {
+        const ctx = item.contextJson as Record<string, any> | null;
+        const sys = (ctx?.system || ctx?.snapshot?.system || {}) as Record<string, any>;
+        const brand = String(sys.brand || '').trim();
+        const model = String(sys.model || '').trim();
+        const deviceModel =
+          brand && model && !model.toLowerCase().includes(brand.toLowerCase())
+            ? `${brand} ${model}`
+            : model || brand || '未知机型';
+
+        return {
+          id: item.id,
+          category: item.category,
+          content: item.content,
+          status: item.status,
+          deviceModel,
+          createdAt: item.createdAt,
+        };
+      }),
+      total,
+      page,
+      limit,
+      hasMore: skip + items.length < total,
+    };
+  }
+
   async listFeedback(
     search?: string,
     status?: string,
