@@ -472,6 +472,30 @@ describe('StatementService', () => {
         ),
       ).toBe('农业银行');
     });
+
+    it('detects Bank of China from the transaction list title', () => {
+      const text = [
+        '中国银行交易流水明细清单',
+        '交易区间： 2026-02-01 至2026-07-31 客户姓名： 测试用户 页数: 1 /2',
+        '借记卡号： 6217******1234 借方发生数： 78.40 贷方发生数： 75.00 行数: 2',
+        '记账日期 记账时间 币别 金额 余额 交易名称 渠道 网点名称 附言',
+        '2026-07-31 13:27:28 人民币 -3.00 1.56 网上快捷支付 银企对接 ------------------------- 财付通-测试商户',
+      ].join('\n');
+
+      expect(detect(text)).toBe('中国银行');
+    });
+
+    it('does not treat Alipay memo mentioning 中国银行 as BOC statement', () => {
+      expect(
+        detect(
+          [
+            '支付宝支付科技有限公司 交易流水证明',
+            '交易时间 交易对方 金额',
+            '2026-01-01 12:00:00 中国银行储蓄卡 100.00',
+          ].join('\n'),
+        ),
+      ).toBe('支付宝');
+    });
   });
 
   describe('parseCmbTransactions', () => {
@@ -763,6 +787,91 @@ describe('StatementService', () => {
       expect(txs[0]).toMatchObject({ amount: 1200, counterparty: '**转账' });
       expect(txs[1]).toMatchObject({ amount: 1200, counterparty: '**转账' });
       expect(txs[2].counterparty).toBe('*哲菁');
+    });
+  });
+
+  describe('parseBocTransactions', () => {
+    const parse = (text: string) =>
+      (
+        service as unknown as { parseBocTransactions(t: string): Transaction[] }
+      ).parseBocTransactions(text);
+
+    it('parses expense and income rows with comma amounts and signed amounts', () => {
+      const text = [
+        '2026-07-31 13:27:28 人民币 -3.00 1.56 网上快捷支付 银企对接 ------------------------- 财付通-测试商户',
+        '2026-07-26 18:15:47 人民币 1,500.50 1,501.96 网上快捷提现 银企对接 ------------------------- --微信零钱提现-0001',
+        '2026-05-03 15:14:40 人民币 -3,000.00 40.48 跨行转账 手机银行 ------------------------- -------------',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(3);
+      expect(txs[0]).toMatchObject({
+        date: '2026-07-31 13:27:28',
+        month: '2026-07',
+        type: '支出',
+        amount: 3,
+        counterparty: '财付通-测试商户',
+      });
+      expect(txs[1]).toMatchObject({
+        type: '收入',
+        amount: 1500.5,
+        counterparty: '--微信零钱提现-0001',
+      });
+      expect(txs[2]).toMatchObject({
+        type: '支出',
+        amount: 3000,
+        counterparty: '跨行转账',
+      });
+    });
+
+    it('uses transaction name when memo is a dash placeholder', () => {
+      const txs = parse(
+        '2026-07-31 12:02:46 人民币 15.00 16.56 数字人民币兑回 网上银行 ------------------------- -------------',
+      );
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        type: '收入',
+        amount: 15,
+        counterparty: '数字人民币兑回',
+      });
+    });
+
+    it('merges wrapped memo lines', () => {
+      const text = [
+        '2026-07-31 13:27:28 人民币 -3.00 1.56 网上快捷支付 银企对接 ------------------------- 财付通-广东省大沐新能源科技',
+        '有限公司',
+        '2026-07-26 18:54:37 人民币 -5.92 48.72 网上快捷支付 银企对接 ------------------------- 美团支付(钱袋宝)-美团AppBing',
+        'o手打柠檬茶(怀德店)',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(2);
+      expect(txs[0].counterparty).toBe('财付通-广东省大沐新能源科技有限公司');
+      expect(txs[1].counterparty).toBe(
+        '美团支付(钱袋宝)-美团AppBingo手打柠檬茶(怀德店)',
+      );
+    });
+
+    it('skips page headers/footers', () => {
+      const text = [
+        '中国银行交易流水明细清单',
+        '交易区间： 2026-02-01 至2026-07-31 客户姓名： 测试用户 页数: 1 /2',
+        '借记卡号： 6217******1234 借方发生数： 78.40 贷方发生数： 75.00 行数: 2',
+        '账号： 7159******3299 按收支筛选： 全部 按币种筛选： 全部 打印时间： 2026/07/31 20:04:29',
+        '记账日期 记账时间 币别 金额 余额 交易名称 渠道 网点名称 附言',
+        '2026-07-31 13:27:28 人民币 -3.00 1.56 网上快捷支付 银企对接 ------------------------- 财付通-测试A',
+        '温馨提示: 1.记账日期/时间为系统进行记账处理的日期/时间,可能与实际交易提交时间存在差异。',
+        '第 1 页/共 2 页',
+        '--------------------END--------------------',
+        '中国银行交易流水明细清单',
+        '记账日期 记账时间 币别 金额 余额 交易名称 渠道 网点名称 附言',
+        '2026-07-30 19:08:01 人民币 10.00 19.56 数字人民币兑回 网上银行 ------------------------- -------------',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(2);
+      expect(txs[0].counterparty).toBe('财付通-测试A');
+      expect(txs[1]).toMatchObject({
+        amount: 10,
+        counterparty: '数字人民币兑回',
+      });
     });
   });
 

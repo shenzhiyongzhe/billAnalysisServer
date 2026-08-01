@@ -228,6 +228,8 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       source = '农业银行';
     else if (originalname.includes('建设') || originalname.includes('建行'))
       source = '建设银行';
+    else if (originalname.includes('中国银行') || originalname.includes('中行'))
+      source = '中国银行';
 
     // ② 写文件，并在事务内完成扣次和建记录
     const fileName = `${md5}_${originalname}`;
@@ -411,7 +413,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
         if (!detected) {
           const errorMessage =
-            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行、农商银行、农业银行或建设银行交易流水。';
+            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行、农商银行、农业银行、建设银行或中国银行交易流水。';
           await this.safeLogUnsupportedFormat({
             userId,
             queryRecordId: recordId,
@@ -713,7 +715,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const tips = [
       '账单上传后将采用银行级加密存储，仅供您本人查看。',
       '分析完成后，可生成多维度分类统计图表，方便记账与对账。',
-      '系统支持微信、支付宝、招商、交通、工商、顺德农商、农业及建设银行账单。',
+      '系统支持微信、支付宝、招商、交通、工商、顺德农商、农业、建设及中国银行账单。',
       '大体积账单解析可能会消耗较多时间，请耐心等待。',
       '如果解析失败，请检查账单文件是否完整或密码是否正确。',
     ];
@@ -1357,6 +1359,10 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       return '建设银行';
     }
 
+    if (headerText.includes('中国银行交易流水明细清单')) {
+      return '中国银行';
+    }
+
     if (/农村商业银行股份有限公司\s+账户\/卡明细信息/.test(headerText)) {
       return '农商银行';
     }
@@ -1702,6 +1708,24 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         endDate = fmt(rangeMatch[2]);
       }
       transactions.push(...this.parseCcbTransactions(text));
+    } else if (source === '中国银行') {
+      const nameMatch = text.match(/客户姓名：\s*(\S+)/);
+      if (nameMatch) {
+        name = nameMatch[1].trim();
+      }
+      const cardMatch =
+        text.match(/借记卡号：\s*([\d*]+)/) || text.match(/账号：\s*([\d*]+)/);
+      if (cardMatch) {
+        cardNumber = cardMatch[1];
+      }
+      const rangeMatch = text.match(
+        /交易区间：\s*(\d{4}-\d{2}-\d{2})\s*至\s*(\d{4}-\d{2}-\d{2})/,
+      );
+      if (rangeMatch) {
+        startDate = rangeMatch[1];
+        endDate = rangeMatch[2];
+      }
+      transactions.push(...this.parseBocTransactions(text));
     }
 
     transactions.sort((a, b) => a.date.localeCompare(b.date));
@@ -2151,6 +2175,101 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
 
     return transactions;
+  }
+
+  private isBocTransactionStart(line: string): boolean {
+    return /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+/.test(line);
+  }
+
+  private shouldSkipBocNoiseLine(line: string): boolean {
+    return (
+      !line ||
+      line.includes('中国银行交易流水明细清单') ||
+      line.startsWith('记账日期') ||
+      line.startsWith('交易区间') ||
+      line.startsWith('借记卡号') ||
+      line.startsWith('账号：') ||
+      line.startsWith('账号:') ||
+      line.startsWith('温馨提示') ||
+      line.startsWith('打印时间') ||
+      /^第\s*\d+\s*页/.test(line) ||
+      line.includes('--------------------END--------------------') ||
+      line.includes('按收支筛选') ||
+      line.includes('按币种筛选')
+    );
+  }
+
+  /** 从「交易名称 渠道 ---- 附言」尾部提取对方信息；优先附言。 */
+  private parseBocCounterparty(tail: string): string {
+    const segments = tail
+      .split(/\s*-{5,}\s*/)
+      .map((s) => s.trim())
+      .filter((s) => s && !/^-+$/.test(s));
+
+    const head = segments[0] || '';
+    const headMatch = head.match(/^(\S+)(?:\s+(.+))?$/);
+    const txName = (headMatch?.[1] || head).trim();
+    const memo = segments
+      .slice(1)
+      .join('')
+      .replace(/^-+$/, '')
+      .trim();
+
+    return memo || txName || '未知';
+  }
+
+  private parseBocTransactions(text: string): Transaction[] {
+    const transactions: Transaction[] = [];
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const tryParseBuffer = (raw: string): boolean => {
+      const line = raw.replace(/\s+/g, ' ').trim();
+      const match = line.match(
+        /^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(\S+)\s+([-+]?[0-9,]+\.\d{2})\s+([0-9,]+\.\d{2})\s+(.+)$/,
+      );
+      if (!match) return false;
+
+      const dateOnly = match[1];
+      const time = match[2];
+      const date = `${dateOnly} ${time}`;
+      const month = dateOnly.substring(0, 7);
+      const amountStr = match[4].replace(/,/g, '');
+      const amountNum = parseFloat(amountStr);
+      if (Number.isNaN(amountNum)) return false;
+
+      const type: '收入' | '支出' = amountNum < 0 ? '支出' : '收入';
+      const amount = Math.abs(amountNum);
+      const counterparty = this.parseBocCounterparty(match[6]);
+
+      transactions.push({ date, month, type, amount, counterparty });
+      return true;
+    };
+
+    let buffer = '';
+    for (const rawLine of lines) {
+      if (this.shouldSkipBocNoiseLine(rawLine)) continue;
+
+      if (this.isBocTransactionStart(rawLine)) {
+        if (buffer) {
+          tryParseBuffer(buffer);
+        }
+        buffer = rawLine;
+        continue;
+      }
+
+      if (buffer) {
+        buffer += rawLine;
+      }
+    }
+
+    if (buffer) {
+      tryParseBuffer(buffer);
+    }
+
+    return this.dedupeTransactions(transactions);
   }
 
   private parseAlipayCustomerReceiptTransactions(text: string): Transaction[] {
