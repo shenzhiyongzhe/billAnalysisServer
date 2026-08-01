@@ -576,9 +576,24 @@ export class FeedbackService {
     if (!fs.existsSync(filePath)) {
       throw new NotFoundException('原文件不存在或已被清除');
     }
+    const ext = path
+      .extname(item.originalFileName || item.storedFileName)
+      .replace(/^\./, '')
+      .toLowerCase();
+    const contentTypeByExt: Record<string, string> = {
+      pdf: 'application/pdf',
+      csv: 'text/csv; charset=utf-8',
+      xls: 'application/vnd.ms-excel',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      zip: 'application/zip',
+      txt: 'text/plain; charset=utf-8',
+    };
+    const stat = fs.statSync(filePath);
     return {
       stream: fs.createReadStream(filePath),
       fileName: item.originalFileName || item.storedFileName,
+      contentType: contentTypeByExt[ext] || 'application/octet-stream',
+      contentLength: stat.size,
     };
   }
 

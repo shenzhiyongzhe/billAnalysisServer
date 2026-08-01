@@ -155,13 +155,23 @@ export class FeedbackController {
     @Param('id', ParseIntPipe) id: number,
     @Res() res: Response,
   ) {
-    const { stream, fileName } =
+    const { stream, fileName, contentType, contentLength } =
       await this.feedbackService.getUnsupportedFormatDownload(id);
     const encodedName = encodeURIComponent(fileName);
+    // 微信 wx.downloadFile 依赖正确的 Content-Type，缺省时常判为下载失败
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Length', String(contentLength));
     res.setHeader(
       'Content-Disposition',
       `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`,
     );
+    stream.on('error', () => {
+      if (!res.headersSent) {
+        res.status(500).end();
+      } else {
+        res.destroy();
+      }
+    });
     stream.pipe(res);
   }
 
