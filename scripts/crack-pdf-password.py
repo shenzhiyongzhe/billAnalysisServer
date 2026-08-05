@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Fast PDF user-password checker for Standard security handler R=2/3.
+Fast PDF user-password checker for Standard security handler R=2/3/4.
 Verifies candidates against /U using Algorithm 3.2 + 3.4/3.5 (no full decrypt).
+Supports hex </O> and literal (/O (...)) encodings; prefers top-level /Length 40|128|256.
 
 Usage:
   python scripts/crack-pdf-password.py path/to/file.pdf
@@ -145,6 +146,62 @@ def parse_hex_bytes(s: str) -> bytes:
     return bytes.fromhex(re.sub(r"\s+", "", s))
 
 
+def parse_pdf_literal_string(data: bytes, start: int) -> tuple[bytes, int]:
+    """Parse a PDF literal string starting at data[start] == ord('('). Returns (value, end_index)."""
+    if start >= len(data) or data[start] != ord("("):
+        raise ValueError("literal string must start with '('")
+    i = start + 1
+    out = bytearray()
+    depth = 1
+    while i < len(data):
+        b = data[i]
+        if b == ord("\\"):
+            i += 1
+            if i >= len(data):
+                break
+            esc = data[i]
+            if esc in (ord("n"),):
+                out.append(0x0A)
+            elif esc in (ord("r"),):
+                out.append(0x0D)
+            elif esc in (ord("t"),):
+                out.append(0x09)
+            elif esc in (ord("b"),):
+                out.append(0x08)
+            elif esc in (ord("f"),):
+                out.append(0x0C)
+            elif esc in (ord("("), ord(")"), ord("\\")):
+                out.append(esc)
+            elif ord("0") <= esc <= ord("7"):
+                octal = [esc]
+                j = i + 1
+                while j < len(data) and len(octal) < 3 and ord("0") <= data[j] <= ord("7"):
+                    octal.append(data[j])
+                    j += 1
+                out.append(int(bytes(octal), 8) & 0xFF)
+                i = j - 1
+            else:
+                # Unknown escape: take the char as-is (PDF ignores the backslash)
+                out.append(esc)
+            i += 1
+            continue
+        if b == ord("("):
+            depth += 1
+            out.append(b)
+            i += 1
+            continue
+        if b == ord(")"):
+            depth -= 1
+            if depth == 0:
+                return bytes(out), i + 1
+            out.append(b)
+            i += 1
+            continue
+        out.append(b)
+        i += 1
+    raise ValueError("unterminated PDF literal string")
+
+
 def extract_encrypt_info(pdf: bytes) -> dict:
     # Only scan the file tail — full-file regex on multi-MB PDFs is painfully slow.
     tail = pdf[-min(len(pdf), 256 * 1024) :]
@@ -180,18 +237,29 @@ def extract_encrypt_info(pdf: bytes) -> dict:
             raise ValueError(f"加密字典缺少 /{name}")
         return int(m.group(1))
 
-    def req_hex(name: str) -> bytes:
+    def req_bytes(name: str) -> bytes:
+        # Hex string form: /O <DEADBEEF...>
         m = re.search(rf"/{name}\s*<([0-9A-Fa-f]+)>".encode(), body)
+        if m:
+            return parse_hex_bytes(m.group(1).decode())
+        # Literal string form: /O (...)
+        m = re.search(rf"/{name}\s*\(".encode(), body)
         if not m:
             raise ValueError(f"加密字典缺少 /{name}")
-        return parse_hex_bytes(m.group(1).decode())
+        value, _ = parse_pdf_literal_string(body, m.end() - 1)
+        return value
 
     revision = req_int("R")
     version = req_int("V")
-    length = req_int("Length") if b"/Length" in body else (40 if revision == 2 else 128)
+    # Prefer top-level key length (40/128/256). Nested /CF StdCF also has /Length 16 (bytes).
+    length_matches = [int(x) for x in re.findall(rb"/Length\s+(\d+)", body)]
+    length = next(
+        (n for n in reversed(length_matches) if n in (40, 128, 256)),
+        (40 if revision == 2 else 128),
+    )
     p_entry = req_int("P")
-    o_entry = req_hex("O")
-    u_entry = req_hex("U")
+    o_entry = req_bytes("O")
+    u_entry = req_bytes("U")
 
     return {
         "obj": obj_num,

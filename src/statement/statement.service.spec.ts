@@ -11,11 +11,15 @@ describe('StatementService', () => {
       findUnique: jest.Mock;
       findFirst: jest.Mock;
       create: jest.Mock;
+      update: jest.Mock;
     };
     wechatUser: {
       findUnique: jest.Mock;
       update: jest.Mock;
       updateMany: jest.Mock;
+    };
+    statementUser: {
+      update: jest.Mock;
     };
     $transaction: jest.Mock;
   };
@@ -26,11 +30,15 @@ describe('StatementService', () => {
         findUnique: jest.fn(),
         findFirst: jest.fn(),
         create: jest.fn(),
+        update: jest.fn(),
       },
       wechatUser: {
         findUnique: jest.fn(),
         update: jest.fn(),
         updateMany: jest.fn(),
+      },
+      statementUser: {
+        update: jest.fn(),
       },
       $transaction: jest.fn(),
     };
@@ -163,6 +171,104 @@ describe('StatementService', () => {
       expect(first.id).toBe(44);
       expect(second.id).toBe(45);
       expect(prisma.wechatUser.updateMany).toHaveBeenCalledTimes(2);
+    });
+
+    it('reuses same-user done record within 3 days without charging', async () => {
+      prisma.queryRecord.findUnique.mockResolvedValue(null);
+      prisma.queryRecord.findFirst.mockResolvedValue({
+        id: 99,
+        userId: 7,
+        status: 'done',
+        summaryJson: { name: '测试' },
+      });
+
+      await expect(
+        service.processAndSaveFile(
+          7,
+          Buffer.from('same-pdf'),
+          '民生银行.pdf',
+          'upload_request_same_user',
+        ),
+      ).resolves.toEqual({ id: 99, isDuplicate: true });
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.wechatUser.updateMany).not.toHaveBeenCalled();
+      expect((service as any).parseAndUpdateRecord).not.toHaveBeenCalled();
+    });
+
+    it('clones another user done result into a new record and skips parse', async () => {
+      const cloneSource = {
+        id: 10,
+        source: '民生银行',
+        summaryJson: {
+          id: '10',
+          name: '张三',
+          source: '民生银行',
+          startDate: '2025-05-26',
+          endDate: '2026-05-26',
+        },
+        transactionsJson: [
+          {
+            date: '2025-05-27 17:49:33',
+            month: '2025-05',
+            type: '支出',
+            amount: 2000,
+            counterparty: '微信转账',
+          },
+        ],
+        startDate: new Date('2025-05-26'),
+        endDate: new Date('2026-05-26'),
+        statementUserId: 55,
+      };
+
+      prisma.queryRecord.findUnique.mockResolvedValue(null);
+      // 1) same-user lookup → null; 2) cross-user clone lookup → source;
+      // 3) in-tx same-user → null; 4) in-tx refresh clone → source
+      prisma.queryRecord.findFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(cloneSource)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(cloneSource);
+      prisma.wechatUser.findUnique.mockResolvedValue({
+        id: 8,
+        monthlyCardExpiry: null,
+      });
+      prisma.wechatUser.updateMany.mockResolvedValue({ count: 1 });
+      prisma.queryRecord.create.mockResolvedValue({ id: 100 });
+      prisma.queryRecord.update.mockResolvedValue({ id: 100 });
+      prisma.statementUser.update.mockResolvedValue({ id: 55 });
+      prisma.$transaction.mockImplementation((callback) => callback(prisma));
+
+      await expect(
+        service.processAndSaveFile(
+          8,
+          Buffer.from('same-pdf'),
+          '民生银行.pdf',
+          'upload_request_other_user',
+        ),
+      ).resolves.toEqual({ id: 100, isDuplicate: false });
+
+      expect(prisma.wechatUser.updateMany).toHaveBeenCalledTimes(1);
+      expect(prisma.queryRecord.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          userId: 8,
+          status: 'done',
+          source: '民生银行',
+          statementUserId: 55,
+          transactionsJson: cloneSource.transactionsJson,
+        }),
+      });
+      expect(prisma.queryRecord.update).toHaveBeenCalledWith({
+        where: { id: 100 },
+        data: {
+          summaryJson: expect.objectContaining({ id: '100', name: '张三' }),
+        },
+      });
+      expect(prisma.statementUser.update).toHaveBeenCalledWith({
+        where: { id: 55 },
+        data: { queryCount: { increment: 1 } },
+      });
+      expect((service as any).parseAndUpdateRecord).not.toHaveBeenCalled();
     });
   });
 
@@ -492,6 +598,51 @@ describe('StatementService', () => {
             '支付宝支付科技有限公司 交易流水证明',
             '交易时间 交易对方 金额',
             '2026-01-01 12:00:00 中国银行储蓄卡 100.00',
+          ].join('\n'),
+        ),
+      ).toBe('支付宝');
+    });
+
+    it('detects Minsheng Bank from personal account statement header', () => {
+      const text = [
+        '个人账户对账单',
+        '客户姓名:测试用户 客户账号:6226190302659135 产品名称:活期 币 种:人民币 钞汇标志:钞',
+        '开户机构:中国民生银行股份有限公司广州珠江支行 账户账号:50000000000179924541 起止日期:2025/05/26-2026/05/26 筛选条件:全部 证件号码:320721198210010452',
+        '凭证类型 凭证号码 交易时间 摘要 交易金额 账户余额 现转标志 交易渠道 交易机构 对方户名/账号 对方行名',
+      ].join('\n');
+
+      expect(detect(text)).toBe('民生银行');
+    });
+
+    it('does not treat Alipay memo mentioning 民生银行 as CMBc statement', () => {
+      expect(
+        detect(
+          [
+            '支付宝支付科技有限公司 交易流水证明',
+            '交易时间 交易对方 金额',
+            '2026-01-01 12:00:00 民生银行储蓄卡 100.00',
+          ].join('\n'),
+        ),
+      ).toBe('支付宝');
+    });
+
+    it('detects SPDB from personal transaction statement title', () => {
+      const text = [
+        '上海浦东发展银行个人客户交易流水专用回单',
+        'Transaction Statement of Shanghai Pudong Development Bank',
+        '户名: 测试用户 账号: 6217921160538883 起止日期: 20250731-20260731',
+      ].join('\n');
+
+      expect(detect(text)).toBe('浦发银行');
+    });
+
+    it('does not treat Alipay memo mentioning 浦发银行 as SPDB statement', () => {
+      expect(
+        detect(
+          [
+            '支付宝支付科技有限公司 交易流水证明',
+            '交易时间 交易对方 金额',
+            '2026-01-01 12:00:00 浦发银行储蓄卡 100.00',
           ].join('\n'),
         ),
       ).toBe('支付宝');
@@ -871,6 +1022,218 @@ describe('StatementService', () => {
       expect(txs[1]).toMatchObject({
         amount: 10,
         counterparty: '数字人民币兑回',
+      });
+    });
+  });
+
+  describe('parseCmbcTransactions', () => {
+    const parse = (text: string) =>
+      (
+        service as unknown as {
+          parseCmbcTransactions(t: string): Transaction[];
+        }
+      ).parseCmbcTransactions(text);
+
+    it('parses expense and income rows with comma amounts and signed amounts', () => {
+      const text = [
+        '卡 6226190302',
+        '659135 2025/05/27 17:49:33 财付通-快捷支付-微信转账 -2,000.00 393.12 转账 跨行支付 0001 微信转账/1000050201 财付通',
+        '卡 6226190302',
+        '659135 2025/05/28 17:49:35 财付通 退款 2,000.00 2,393.12 转账 跨行支付 0001 微信转账/1000050201 财付通',
+        '卡 6226190302',
+        '659135 2025/06/01 20:34:52 网上支付跨行清算系统汇款 50,000.00 52,284.32 转账 跨行支付 0001 肖自强/6214620421001061869 广发银行股份有限公司',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(3);
+      expect(txs[0]).toMatchObject({
+        date: '2025-05-27 17:49:33',
+        month: '2025-05',
+        type: '支出',
+        amount: 2000,
+        counterparty: '微信转账',
+      });
+      expect(txs[1]).toMatchObject({
+        type: '收入',
+        amount: 2000,
+        counterparty: '微信转账',
+      });
+      expect(txs[2]).toMatchObject({
+        type: '收入',
+        amount: 50000,
+        counterparty: '肖自强',
+      });
+    });
+
+    it('merges wrapped counterparty lines with spaced slash', () => {
+      const text = [
+        '卡 6226190302',
+        '659135 2025/06/01 16:43:36 抖音支付-快捷支付-抖音月付 -108.80 2,284.32 转账 跨行支付 0001 深圳市中融小额贷款有限公司',
+        '/800075500100007 抖音支付',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        type: '支出',
+        amount: 108.8,
+        counterparty: '深圳市中融小额贷款有限公司',
+      });
+    });
+
+    it('parses interest rows without card prefix', () => {
+      const txs = parse('2025/06/21 00:45:34 结息 3.64 53,004.86 转账');
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        date: '2025-06-21 00:45:34',
+        type: '收入',
+        amount: 3.64,
+        counterparty: '结息',
+      });
+    });
+
+    it('skips page headers/footers', () => {
+      const text = [
+        '个人账户对账单',
+        '客户姓名:测试用户 客户账号:6226190302659135 产品名称:活期 币 种:人民币 钞汇标志:钞',
+        '开户机构:中国民生银行股份有限公司广州珠江支行 账户账号:50000000000179924541 起止日期:2025/05/26-2026/05/26 筛选条件:全部 证件号码:320721198210010452',
+        '凭证类型 凭证号码 交易时间 摘要 交易金额 账户余额 现转标志 交易渠道 交易机构 对方户名/账号 对方行名',
+        '卡 6226190302',
+        '659135 2025/05/27 17:49:33 财付通-快捷支付-微信转账 -2,000.00 393.12 转账 跨行支付 0001 微信转账/1000050201 财付通',
+        '_______________________________________________________________________________',
+        '打印渠道:手机银行 打印柜员:1511117102 打印时间:2026-05-26 08:54:10 第 1 页 / 共 37 页',
+        '-- 2 of 37 --',
+        '个人账户对账单',
+        '客户姓名:测试用户 客户账号:6226190302659135 产品名称:活期 币 种:人民币 钞汇标志:钞',
+        '开户机构:中国民生银行股份有限公司广州珠江支行 账户账号:50000000000179924541 起止日期:2025/05/26-2026/05/26 筛选条件:全部 证件号码:320721198210010452',
+        '凭证类型 凭证号码 交易时间 摘要 交易金额 账户余额 现转标志 交易渠道 交易机构 对方户名/账号 对方行名',
+        '卡 6226190302',
+        '659135 2025/05/28 17:49:35 财付通 退款 2,000.00 2,393.12 转账 跨行支付 0001 微信转账/1000050201 财付通',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(2);
+      expect(txs[0].counterparty).toBe('微信转账');
+      expect(txs[1]).toMatchObject({
+        type: '收入',
+        amount: 2000,
+        counterparty: '微信转账',
+      });
+    });
+  });
+
+  describe('parseSpdbTransactions', () => {
+    const parse = (text: string) =>
+      (
+        service as unknown as {
+          parseSpdbTransactions(t: string): Transaction[];
+        }
+      ).parseSpdbTransactions(text);
+
+    it('parses expense and income with wrapped account and signed amounts', () => {
+      const text = [
+        '20250731 054626 62179211605',
+        '38883',
+        '互联汇出',
+        '25073100015',
+        '298',
+        '-4000.00 24790.83 *杰 622848044',
+        '8375*****',
+        '*',
+        '20250731 173046 62179211605',
+        '38883',
+        '财付通-微信',
+        '零钱提现',
+        '9990.01 13238.51 **琪 1071*****',
+        '*',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(2);
+      expect(txs[0]).toMatchObject({
+        date: '2025-07-31 05:46:26',
+        month: '2025-07',
+        type: '支出',
+        amount: 4000,
+        counterparty: '*杰',
+      });
+      expect(txs[1]).toMatchObject({
+        type: '收入',
+        amount: 9990.01,
+        counterparty: '**琪',
+      });
+    });
+
+    it('merges wrapped Chinese tx names and counterparty masks', () => {
+      const text = [
+        '20250731 162845 62179211605',
+        '38883',
+        '网上支付-支',
+        '付宝',
+        '-200.00 16590.83 **龙 208840210',
+        '64560****',
+        '**',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        type: '支出',
+        amount: 200,
+        counterparty: '**龙',
+      });
+    });
+
+    it('parses interest rows without swallowing leading digits into account', () => {
+      const text = [
+        '20250921 042658 62179211605',
+        '38883',
+        '25季息',
+        '17.86 33301.10 ********',
+        '****息 196101325',
+        '00******',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        date: '2025-09-21 04:26:58',
+        type: '收入',
+        amount: 17.86,
+        counterparty: '************息',
+      });
+    });
+
+    it('fixes wrapped balance decimals and skips page chrome', () => {
+      const text = [
+        '上海浦东发展银行个人客户交易流水专用回单',
+        '户名: 测试用户 账号: 6217921160538883 起止日期: 20250731-20260731',
+        '交易日期',
+        'Date',
+        '20250829 085849 62179211605',
+        '38883',
+        '汇入外',
+        'LZ250829000',
+        '40862',
+        '4000000.00 4000857.',
+        '26 **萍 621768051',
+        '4******',
+        '****',
+        '第1页/共154页，Page 1 of 154',
+        '-- 2 of 154 --',
+        '20250829 105421 62179211605',
+        '38883',
+        '网上支付-财',
+        '付通',
+        '-149.00 4000708.',
+        '26 ****手 1593*****',
+        '*',
+      ].join('\n');
+      const txs = parse(text);
+      expect(txs).toHaveLength(2);
+      expect(txs[0]).toMatchObject({
+        type: '收入',
+        amount: 4000000,
+        counterparty: '**萍',
+      });
+      expect(txs[1]).toMatchObject({
+        type: '支出',
+        amount: 149,
+        counterparty: '****手',
       });
     });
   });

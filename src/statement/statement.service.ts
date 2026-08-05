@@ -184,7 +184,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const md5 = crypto.createHash('md5').update(buffer).digest('hex');
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
 
-    // 0. Check if a reusable duplicate record exists in the last 3 days
+    // 0. Same user: reuse existing record within 3 days (no new row, no charge)
     const existing = await this.prisma.queryRecord.findFirst({
       where: {
         userId,
@@ -214,6 +214,29 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    // 0b. Any user: find a recent done parse to clone (new row + charge, skip re-parse)
+    const cloneSource = await this.prisma.queryRecord.findFirst({
+      where: {
+        filePath: { startsWith: md5 },
+        status: 'done',
+        createdAt: { gte: threeDaysAgo },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        source: true,
+        summaryJson: true,
+        transactionsJson: true,
+        startDate: true,
+        endDate: true,
+        statementUserId: true,
+      },
+    });
+    const reusableClone =
+      cloneSource?.summaryJson && cloneSource.transactionsJson
+        ? cloneSource
+        : null;
+
     // ① 从文件名快速判断来源（不解析 PDF），用于立即建记录
     let source = '未知';
     if (originalname.includes('微信')) source = '微信';
@@ -228,6 +251,12 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       source = '农业银行';
     else if (originalname.includes('建设') || originalname.includes('建行'))
       source = '建设银行';
+    else if (originalname.includes('民生')) source = '民生银行';
+    else if (
+      originalname.includes('浦发') ||
+      originalname.includes('浦东发展')
+    )
+      source = '浦发银行';
     else if (originalname.includes('中国银行') || originalname.includes('中行'))
       source = '中国银行';
 
@@ -300,6 +329,64 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
           if (updated.count === 0) {
             throw new BadRequestException('剩余分析次数不足');
           }
+        }
+
+        // Cross-user (or any) done clone: new record, skip PDF parse
+        const freshClone =
+          reusableClone &&
+          (await tx.queryRecord.findFirst({
+            where: {
+              id: reusableClone.id,
+              status: 'done',
+            },
+            select: {
+              id: true,
+              source: true,
+              summaryJson: true,
+              transactionsJson: true,
+              startDate: true,
+              endDate: true,
+              statementUserId: true,
+            },
+          }));
+
+        if (
+          freshClone?.summaryJson &&
+          freshClone.transactionsJson &&
+          typeof freshClone.summaryJson === 'object'
+        ) {
+          const summary = {
+            ...(freshClone.summaryJson as Record<string, unknown>),
+          };
+          const record = await tx.queryRecord.create({
+            data: {
+              userId,
+              uploadRequestId: requestId,
+              filePath: fileName,
+              source: freshClone.source || source,
+              status: 'done',
+              summaryJson: summary as any,
+              transactionsJson: freshClone.transactionsJson as any,
+              startDate: freshClone.startDate,
+              endDate: freshClone.endDate,
+              statementUserId: freshClone.statementUserId,
+            },
+          });
+          summary.id = record.id.toString();
+          await tx.queryRecord.update({
+            where: { id: record.id },
+            data: { summaryJson: summary as any },
+          });
+          if (freshClone.statementUserId) {
+            await tx.statementUser.update({
+              where: { id: freshClone.statementUserId },
+              data: { queryCount: { increment: 1 } },
+            });
+          }
+          this.logger.log(
+            `Cloned done parse from record ${freshClone.id} to new record ${record.id} for user ${userId}`,
+          );
+          return { id: record.id, created: false, isDuplicate: false };
         }
 
         const record = await tx.queryRecord.create({
@@ -413,7 +500,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
         if (!detected) {
           const errorMessage =
-            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行、农商银行、农业银行、建设银行或中国银行交易流水。';
+            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行、农商银行、农业银行、建设银行、民生银行、浦发银行或中国银行交易流水。';
           await this.safeLogUnsupportedFormat({
             userId,
             queryRecordId: recordId,
@@ -715,7 +802,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const tips = [
       '账单上传后将采用银行级加密存储，仅供您本人查看。',
       '分析完成后，可生成多维度分类统计图表，方便记账与对账。',
-      '系统支持微信、支付宝、招商、交通、工商、顺德农商、农业、建设及中国银行账单。',
+      '系统支持微信、支付宝、招商、交通、工商、顺德农商、农业、建设、民生、浦发及中国银行账单。',
       '大体积账单解析可能会消耗较多时间，请耐心等待。',
       '如果解析失败，请检查账单文件是否完整或密码是否正确。',
     ];
@@ -1363,6 +1450,17 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       return '中国银行';
     }
 
+    if (
+      headerText.includes('个人账户对账单') &&
+      headerText.includes('中国民生银行')
+    ) {
+      return '民生银行';
+    }
+
+    if (headerText.includes('上海浦东发展银行个人客户交易流水专用回单')) {
+      return '浦发银行';
+    }
+
     if (/农村商业银行股份有限公司\s+账户\/卡明细信息/.test(headerText)) {
       return '农商银行';
     }
@@ -1475,7 +1573,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
             product = fullText.substring(startIdx, endIdx).trim();
             product = product
               .replace(
-                /(?:招商银行|交通银行|工商银行|建设银行|农业银行|中国银行|邮储银行|中信银行|光大银行|华夏银行|民生银行|广发银行|深发银行|招商|交行|工行|建行|农行|中行|网商银行|网商|花呗|余额宝|账户余额|余额|红包|储蓄卡|信用卡|借记卡)\(?[0-9]*\)?&?/g,
+                /(?:招商银行|交通银行|工商银行|建设银行|农业银行|中国银行|邮储银行|中信银行|光大银行|华夏银行|民生银行|浦发银行|广发银行|深发银行|招商|交行|工行|建行|农行|中行|浦发|网商银行|网商|花呗|余额宝|账户余额|余额|红包|储蓄卡|信用卡|借记卡)\(?[0-9]*\)?&?/g,
                 '',
               )
               .trim();
@@ -1726,6 +1824,41 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         endDate = rangeMatch[2];
       }
       transactions.push(...this.parseBocTransactions(text));
+    } else if (source === '民生银行') {
+      const nameMatch = text.match(/客户姓名:(\S+)/);
+      if (nameMatch) {
+        name = nameMatch[1].trim();
+      }
+      const cardMatch = text.match(/客户账号:(\d+)/);
+      if (cardMatch) {
+        cardNumber = cardMatch[1];
+      }
+      const rangeMatch = text.match(
+        /起止日期:(\d{4}\/\d{2}\/\d{2})-(\d{4}\/\d{2}\/\d{2})/,
+      );
+      if (rangeMatch) {
+        const fmt = (d: string) => d.replace(/\//g, '-');
+        startDate = fmt(rangeMatch[1]);
+        endDate = fmt(rangeMatch[2]);
+      }
+      transactions.push(...this.parseCmbcTransactions(text));
+    } else if (source === '浦发银行') {
+      const nameMatch = text.match(/户名:\s*(\S+)/);
+      if (nameMatch) {
+        name = nameMatch[1].trim();
+      }
+      const cardMatch = text.match(/账号:\s*(\d+)/);
+      if (cardMatch) {
+        cardNumber = cardMatch[1];
+      }
+      const rangeMatch = text.match(/起止日期:\s*(\d{8})-(\d{8})/);
+      if (rangeMatch) {
+        const fmt = (d: string) =>
+          `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+        startDate = fmt(rangeMatch[1]);
+        endDate = fmt(rangeMatch[2]);
+      }
+      transactions.push(...this.parseSpdbTransactions(text));
     }
 
     transactions.sort((a, b) => a.date.localeCompare(b.date));
@@ -2262,6 +2395,259 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
       if (buffer) {
         buffer += rawLine;
+      }
+    }
+
+    if (buffer) {
+      tryParseBuffer(buffer);
+    }
+
+    return this.dedupeTransactions(transactions);
+  }
+
+  private isCmbcTransactionStart(line: string): boolean {
+    return (
+      /^卡\s+\d+/.test(line) ||
+      /^\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}/.test(line)
+    );
+  }
+
+  private shouldSkipCmbcNoiseLine(line: string): boolean {
+    return (
+      !line ||
+      line === '个人账户对账单' ||
+      line.startsWith('客户姓名') ||
+      line.startsWith('开户机构') ||
+      line.startsWith('凭证类型') ||
+      line.startsWith('打印渠道') ||
+      line.startsWith('-- ') ||
+      /^_+/.test(line)
+    );
+  }
+
+  /** 从「对方户名/账号 对方行名」提取对方；优先斜杠前户名，否则回退摘要。 */
+  private parseCmbcCounterparty(tail: string, summary: string): string {
+    const normalized = (tail || '').replace(/\s*\/\s*/, '/').trim();
+    if (normalized) {
+      const match = normalized.match(/^([^/]+?)\/(\S+)?(?:\s+(.+))?$/);
+      if (match) {
+        const name = match[1].trim();
+        if (name) return name;
+        const bank = (match[3] || '').trim();
+        if (bank) return bank;
+      }
+      const firstToken = normalized.split(/\s+/)[0];
+      if (firstToken && firstToken !== '/') return firstToken;
+    }
+    return summary.trim() || '未知';
+  }
+
+  private parseCmbcTransactions(text: string): Transaction[] {
+    const transactions: Transaction[] = [];
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const tryParseBuffer = (raw: string): boolean => {
+      const line = raw.replace(/\s+/g, ' ').trim();
+      const match = line.match(
+        /^(?:卡\s+[\d\s]+?)?(\d{4}\/\d{2}\/\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.+?)\s+(-?[0-9,]+\.\d{2})\s+([0-9,]+\.\d{2})\s+(\S+)(?:\s+(\S+)\s+(\S+)\s*(.*))?$/,
+      );
+      if (!match) return false;
+
+      const dateRaw = match[1].replace(/\//g, '-');
+      const time = match[2];
+      const date = `${dateRaw} ${time}`;
+      const month = dateRaw.substring(0, 7);
+      const summary = match[3].trim();
+      const amountStr = match[4].replace(/,/g, '');
+      const amountNum = parseFloat(amountStr);
+      if (Number.isNaN(amountNum)) return false;
+
+      const type: '收入' | '支出' = amountNum < 0 ? '支出' : '收入';
+      const amount = Math.abs(amountNum);
+      const counterparty = this.parseCmbcCounterparty(match[9] || '', summary);
+
+      transactions.push({ date, month, type, amount, counterparty });
+      return true;
+    };
+
+    let buffer = '';
+    for (const rawLine of lines) {
+      if (this.shouldSkipCmbcNoiseLine(rawLine)) continue;
+
+      if (this.isCmbcTransactionStart(rawLine)) {
+        if (buffer) {
+          tryParseBuffer(buffer);
+        }
+        buffer = rawLine;
+        continue;
+      }
+
+      if (buffer) {
+        buffer += ` ${rawLine}`;
+      }
+    }
+
+    if (buffer) {
+      tryParseBuffer(buffer);
+    }
+
+    return this.dedupeTransactions(transactions);
+  }
+
+  private isSpdbTransactionStart(line: string): boolean {
+    return /^\d{8}\s+\d{6}\b/.test(line);
+  }
+
+  private shouldSkipSpdbNoiseLine(line: string): boolean {
+    return (
+      !line ||
+      line.includes('上海浦东发展银行') ||
+      line.includes('Transaction Statement') ||
+      line.startsWith('户名:') ||
+      line.startsWith('Name:') ||
+      line.startsWith('币种:') ||
+      line.startsWith('Currency:') ||
+      line.startsWith('交易日期') ||
+      line === 'Date' ||
+      line.startsWith('交易时间') ||
+      line === 'Time' ||
+      line.startsWith('交易账号') ||
+      line.startsWith('Transaction') ||
+      line.startsWith('交易名称') ||
+      line === 'Name' ||
+      line.startsWith('交易金额') ||
+      line.startsWith('Amount') ||
+      line.startsWith('账户余额') ||
+      line === 'Balance' ||
+      line.startsWith('对手姓名') ||
+      line.startsWith('Counter') ||
+      line === 'Party' ||
+      line.startsWith('对手账号') ||
+      line.startsWith('Opponent') ||
+      line === 'Account' ||
+      line.startsWith('交易摘要') ||
+      line === 'Summary' ||
+      line === 'Account No:' ||
+      line.startsWith('Start & End') ||
+      /^第\d+页/.test(line) ||
+      line.startsWith('-- ')
+    );
+  }
+
+  /** 合并折行金额/账号，便于正则解析。 */
+  private normalizeSpdbRow(raw: string): string {
+    let line = raw.replace(/\s+/g, ' ').trim();
+    // 4000857. 26 → 4000857.26 ; 684771.8 0 → 684771.80
+    line = line.replace(/(\d)\.\s+(\d{1,2})(?=\s|$)/g, '$1.$2');
+    line = line.replace(/(\d+\.\d)\s+(\d)(?=\s|$)/g, '$1$2');
+
+    const m = line.match(/^(\d{8}\s+\d{6})\s+(.*)$/);
+    if (!m) return line;
+    const rest = m[2];
+    let digits = '';
+    let consumed = 0;
+    for (let i = 0; i < rest.length; i++) {
+      const ch = rest[i];
+      if (ch === ' ') {
+        consumed = i + 1;
+        continue;
+      }
+      if (/\d/.test(ch)) {
+        if (digits.length >= 16) {
+          const peek = rest.slice(i).replace(/\s+/g, '');
+          if (/^\d{0,2}[\u4e00-\u9fff]/.test(peek) || /^[^\d]/.test(peek)) {
+            break;
+          }
+        }
+        if (digits.length >= 19) break;
+        digits += ch;
+        consumed = i + 1;
+        continue;
+      }
+      break;
+    }
+    return `${m[1]} ${digits} ${rest.slice(consumed).trim()}`
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private cleanSpdbTxName(name: string): string {
+    return name
+      .replace(/([\u4e00-\u9fff\-])\s+(?=[\u4e00-\u9fff])/g, '$1')
+      .replace(/\s+(\d)/g, '$1')
+      .replace(/(\d)\s+(\d)/g, '$1$2')
+      .trim();
+  }
+
+  /** 对手姓名在账号（数字/*）之前；折行星号与汉字拼回。 */
+  private parseSpdbCounterparty(tail: string, summary: string): string {
+    const toks = (tail || '')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    const cp: string[] = [];
+    for (const t of toks) {
+      if (/^[\d*]+$/.test(t) && /\d/.test(t)) break;
+      cp.push(t);
+    }
+    const joined = cp.join('');
+    return joined || summary || '未知';
+  }
+
+  private parseSpdbTransactions(text: string): Transaction[] {
+    const transactions: Transaction[] = [];
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const tryParseBuffer = (raw: string): boolean => {
+      const line = this.normalizeSpdbRow(raw);
+      const match = line.match(
+        /^(\d{8})\s+(\d{6})\s+(\d+)\s+(.+?)\s+(-?[0-9,]+\.\d{2})\s+([0-9,]+\.\d{2})\s*(.*)$/,
+      );
+      if (!match) return false;
+
+      const dateRaw = match[1];
+      const timeRaw = match[2];
+      const y = dateRaw.slice(0, 4);
+      const mo = dateRaw.slice(4, 6);
+      const d = dateRaw.slice(6, 8);
+      const hh = timeRaw.slice(0, 2);
+      const mm = timeRaw.slice(2, 4);
+      const ss = timeRaw.slice(4, 6);
+      const date = `${y}-${mo}-${d} ${hh}:${mm}:${ss}`;
+      const month = `${y}-${mo}`;
+      const txName = this.cleanSpdbTxName(match[4]);
+      const amountStr = match[5].replace(/,/g, '');
+      const amountNum = parseFloat(amountStr);
+      if (Number.isNaN(amountNum)) return false;
+
+      const type: '收入' | '支出' = amountNum < 0 ? '支出' : '收入';
+      const amount = Math.abs(amountNum);
+      const counterparty = this.parseSpdbCounterparty(match[7] || '', txName);
+
+      transactions.push({ date, month, type, amount, counterparty });
+      return true;
+    };
+
+    let buffer = '';
+    for (const rawLine of lines) {
+      if (this.shouldSkipSpdbNoiseLine(rawLine)) continue;
+
+      if (this.isSpdbTransactionStart(rawLine)) {
+        if (buffer) {
+          tryParseBuffer(buffer);
+        }
+        buffer = rawLine;
+        continue;
+      }
+
+      if (buffer) {
+        buffer += ` ${rawLine}`;
       }
     }
 
