@@ -2,6 +2,9 @@ import { Logger } from '@nestjs/common';
 import { PasswordException } from 'pdf-parse';
 import { Worker } from 'worker_threads';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
+import { execFile } from 'child_process';
 
 export type PdfExtractProgress = (
   progress: number,
@@ -38,12 +41,96 @@ export class PdfTextExtractor {
     }
   }
 
+  isCorruptedText(text: string): boolean {
+    if (!text || text.length < 50) return false;
+    const controlMatches = text.match(/[\x01-\x08\x0B\x0C\x0E-\x1F]/g);
+    const controlCount = controlMatches ? controlMatches.length : 0;
+    if (controlCount > 50 && controlCount / text.length > 0.05) {
+      return true;
+    }
+    if (controlCount > 200) {
+      return true;
+    }
+    const puaMatches = text.match(/[\uE000-\uF8FF]/g);
+    const puaCount = puaMatches ? puaMatches.length : 0;
+    if (puaCount > 50 && puaCount / text.length > 0.1) {
+      return true;
+    }
+    return false;
+  }
+
+  async extractWithFontDecoder(
+    buffer: Buffer,
+    password?: string,
+    onProgress?: PdfExtractProgress,
+  ): Promise<string> {
+    onProgress?.(30, 'font_decoder', '正在通过字体逆向引擎解码文字...');
+    const tempFile = path.join(
+      os.tmpdir(),
+      `pdf_decode_${Date.now()}_${Math.random().toString(36).substring(2)}.pdf`,
+    );
+    await fs.promises.writeFile(tempFile, buffer);
+
+    const scriptPath = path.resolve(
+      process.cwd(),
+      'scripts/decode-pdf-glyphs.py',
+    );
+    return new Promise<string>((resolve, reject) => {
+      const args = [scriptPath, tempFile];
+      if (password) {
+        args.push(password);
+      }
+
+      execFile(
+        'python3',
+        args,
+        { maxBuffer: 50 * 1024 * 1024 },
+        async (err, stdout, stderr) => {
+          await fs.promises.unlink(tempFile).catch(() => {});
+          if (err) {
+            reject(
+              new Error(
+                `decode-pdf-glyphs.py failed: ${err.message || stderr || err}`,
+              ),
+            );
+          } else {
+            onProgress?.(85, 'font_decoder', '字体逆向解码完成');
+            resolve(stdout);
+          }
+        },
+      );
+    });
+  }
+
   async extract(
     buffer: Buffer,
     password?: string,
     onProgress?: PdfExtractProgress,
   ): Promise<string> {
-    return this.extractWithPdfParse(buffer, password, onProgress);
+    const text = await this.extractWithPdfParse(buffer, password, onProgress);
+    if (this.isCorruptedText(text)) {
+      this.logger.warn(
+        'PDF text appears corrupted or missing ToUnicode CMap. Attempting font glyph reverse decoding fallback...',
+      );
+      try {
+        const decodedText = await this.extractWithFontDecoder(
+          buffer,
+          password,
+          onProgress,
+        );
+        if (decodedText && decodedText.trim().length > 0) {
+          this.logger.log(
+            `Successfully recovered PDF text via font glyph decoder (${decodedText.length} chars)`,
+          );
+          return decodedText;
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Font glyph reverse decoding fallback failed: ${err?.message || err}`,
+        );
+      }
+    }
+    return text;
   }
 
   async extractWithPdfParse(

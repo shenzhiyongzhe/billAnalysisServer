@@ -54,6 +54,36 @@ function stripNullBytes<T>(obj: T): T {
   return obj;
 }
 
+function normalizeCjkRadicals(str: string): string {
+  if (!str) return '';
+  return str.replace(/[\u2E80-\u2EF3\u2F00-\u2FDF]/g, (ch) => {
+    const code = ch.charCodeAt(0);
+    const map: Record<number, string> = {
+      0x2ea0: '民',
+      0x2e99: '号',
+      0x2f40: '支',
+      0x2f08: '人',
+      0x2f53: '民',
+      0x2f9d: '身',
+      0x2f84: '至',
+      0x2f45: '方',
+      0x2fa6: '金',
+      0x2f3e: '户',
+      0x2f11: '入',
+      0x2f43: '日',
+      0x2f47: '月',
+      0x2f4a: '木',
+      0x2f4e: '水',
+      0x2f51: '火',
+      0x2f60: '目',
+      0x2f6d: '行',
+      0x2f77: '见',
+      0x2f94: '言',
+    };
+    return map[code] || ch;
+  });
+}
+
 export interface StatementSummary {
   id: string;
   source: string;
@@ -146,7 +176,12 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     password?: string,
     onProgress?: (progress: number, stage: string, detail: string) => void,
   ): Promise<string> {
-    return this.pdfExtractor.extract(buffer, password, onProgress);
+    const rawText = await this.pdfExtractor.extract(
+      buffer,
+      password,
+      onProgress,
+    );
+    return normalizeCjkRadicals(rawText);
   }
 
   async extractPdfTextForBenchmark(
@@ -154,7 +189,12 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     password: string | undefined,
     onProgress?: (progress: number, stage: string, detail: string) => void,
   ): Promise<string> {
-    return this.pdfExtractor.extract(buffer, password, onProgress);
+    const rawText = await this.pdfExtractor.extract(
+      buffer,
+      password,
+      onProgress,
+    );
+    return normalizeCjkRadicals(rawText);
   }
 
   async processAndSaveFile(
@@ -257,6 +297,12 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       originalname.includes('浦东发展')
     )
       source = '浦发银行';
+    else if (
+      originalname.includes('邮政') ||
+      originalname.includes('邮储') ||
+      originalname.toLowerCase().includes('psbc')
+    )
+      source = '邮储银行';
     else if (originalname.includes('中国银行') || originalname.includes('中行'))
       source = '中国银行';
 
@@ -500,7 +546,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
         if (!detected) {
           const errorMessage =
-            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行、农商银行、农业银行、建设银行、民生银行、浦发银行或中国银行交易流水。';
+            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行、农商银行、农业银行、建设银行、民生银行、浦发银行、邮储银行或中国银行交易流水。';
           await this.safeLogUnsupportedFormat({
             userId,
             queryRecordId: recordId,
@@ -802,7 +848,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     const tips = [
       '账单上传后将采用银行级加密存储，仅供您本人查看。',
       '分析完成后，可生成多维度分类统计图表，方便记账与对账。',
-      '系统支持微信、支付宝、招商、交通、工商、顺德农商、农业、建设、民生、浦发及中国银行账单。',
+      '系统支持微信、支付宝、招商、交通、工商、顺德农商、农业、建设、民生、浦发、邮储及中国银行账单。',
       '大体积账单解析可能会消耗较多时间，请耐心等待。',
       '如果解析失败，请检查账单文件是否完整或密码是否正确。',
     ];
@@ -1471,6 +1517,14 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (
+      headerText.includes('中国邮政储蓄银行') ||
+      headerText.includes('邮政储蓄银行借记账户历史明细') ||
+      headerText.includes('邮政储蓄银行')
+    ) {
+      return '邮储银行';
+    }
+
+    if (
       /支付宝支付科技有限公司\s+(交易流水证明|电子客户回单)/.test(headerText) ||
       headerText.includes('电子客户回单')
     ) {
@@ -1490,10 +1544,12 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     let endDate = '';
 
     if (source === '微信') {
-      const nameMatch = text.match(/兹证明：(.*?)\（居民身份证：(.*?)\）/);
+      const nameMatch = text.match(
+        /兹证明[：:](.*?)[\（\(]居民身份证[：:](.*?)[\）\)]/,
+      );
       if (nameMatch) {
-        name = nameMatch[1];
-        idNumber = nameMatch[2];
+        name = nameMatch[1].trim();
+        idNumber = nameMatch[2].trim();
       }
 
       const parsedTxs = this.parseWechatTransactions(text);
@@ -1859,6 +1915,23 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         endDate = fmt(rangeMatch[2]);
       }
       transactions.push(...this.parseSpdbTransactions(text));
+    } else if (source === '邮储银行') {
+      const nameMatch = text.match(/户名[：:]\s*([^\s\n]+)/);
+      if (nameMatch) {
+        name = nameMatch[1].trim();
+      }
+      const cardMatch = text.match(/卡号\/账号[：:]\s*([0-9A-Za-z]+)/);
+      if (cardMatch) {
+        cardNumber = cardMatch[1].trim();
+      }
+      const rangeMatch = text.match(
+        /起止日期[：:]\s*(\d{4})年(\d{2})月(\d{2})日[-—至](\d{4})年(\d{2})月(\d{2})日/,
+      );
+      if (rangeMatch) {
+        startDate = `${rangeMatch[1]}-${rangeMatch[2]}-${rangeMatch[3]}`;
+        endDate = `${rangeMatch[4]}-${rangeMatch[5]}-${rangeMatch[6]}`;
+      }
+      transactions.push(...this.parsePsbcTransactions(text));
     }
 
     transactions.sort((a, b) => a.date.localeCompare(b.date));
@@ -2653,6 +2726,165 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
     if (buffer) {
       tryParseBuffer(buffer);
+    }
+
+    return this.dedupeTransactions(transactions);
+  }
+
+  private parsePsbcCounterparty(remainder: string): {
+    counterparty: string;
+    product: string;
+  } {
+    const cleaned = remainder.replace(/温馨提示[：:].*$/, '').trim();
+    if (!cleaned) return { counterparty: '未知', product: '' };
+
+    const tokens = cleaned.split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return { counterparty: '未知', product: '' };
+
+    const knownSummaries = [
+      '快捷支付',
+      '微信转账',
+      '他行汇入',
+      '跨行汇出',
+      '网联入账',
+      '利息',
+      '行内转账',
+      '行内汇入',
+      '行内汇出',
+      '现金存入',
+      '现金支取',
+      '代发工资',
+      '退款',
+      '转账',
+      '消费',
+      '退货',
+      '手续费',
+      '结息',
+    ];
+
+    let counterparty = '';
+    let summary = '';
+    let channel = '';
+
+    let summaryIdx = -1;
+    for (let i = 0; i < tokens.length; i++) {
+      if (knownSummaries.some((s) => tokens[i].includes(s))) {
+        summaryIdx = i;
+        break;
+      }
+    }
+
+    if (summaryIdx === 0) {
+      summary = tokens[0];
+      counterparty = summary;
+      channel = tokens[1] || '';
+    } else if (summaryIdx > 0) {
+      summary = tokens[summaryIdx];
+      channel = tokens[summaryIdx + 1] || '';
+      if (summaryIdx === 1) {
+        counterparty = tokens[0];
+      } else if (summaryIdx === 2) {
+        if (
+          /^\d{5,}$/.test(tokens[1]) ||
+          /^[0-9A-Za-z]{6,}$/.test(tokens[1])
+        ) {
+          counterparty = tokens[0];
+        } else {
+          counterparty = `${tokens[0]} ${tokens[1]}`;
+        }
+      } else {
+        counterparty = tokens.slice(0, summaryIdx).join(' ');
+      }
+    } else {
+      counterparty = tokens[0];
+      summary = tokens[1] || '';
+      channel = tokens[2] || '';
+    }
+
+    const product =
+      [counterparty !== summary ? summary : '', channel]
+        .filter(Boolean)
+        .join(' ') || cleaned;
+
+    return {
+      counterparty: counterparty || '未知',
+      product,
+    };
+  }
+
+  private parsePsbcTransactions(text: string): Transaction[] {
+    const lines = text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const transactions: Transaction[] = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i];
+      if (/^\d{4}-\d{2}-\d{2}$/.test(line)) {
+        const datePart = line;
+        let timePart = '';
+        const nextLine = lines[i + 1] || '';
+        if (/^\d{2}:\d{2}:\d{2}$/.test(nextLine)) {
+          timePart = nextLine;
+          i += 2;
+        } else {
+          i++;
+        }
+
+        const date = timePart ? `${datePart} ${timePart}` : datePart;
+        const month = datePart.substring(0, 7);
+
+        const detailLines: string[] = [];
+        while (i < lines.length) {
+          const cur = lines[i];
+          if (/^\d{4}-\d{2}-\d{2}$/.test(cur)) break;
+          if (cur.startsWith('第') && cur.includes('页 / 共')) {
+            i++;
+            continue;
+          }
+          if (/^--\s*\d+\s+of\s+\d+\s*--$/.test(cur)) {
+            i++;
+            continue;
+          }
+          if (
+            cur.startsWith('中国邮政储蓄银行') ||
+            cur.startsWith('卡号/账号') ||
+            cur.startsWith('交易时间 子账号')
+          ) {
+            i++;
+            continue;
+          }
+          detailLines.push(cur);
+          i++;
+        }
+
+        const fullDetail = detailLines.join(' ');
+        const m = fullDetail.match(
+          /^(\d{4})\s+(\S+)\s+(\S+)\s+(钞|汇)\s+(-?[0-9,]+\.[0-9]{2})\s+([0-9,]+\.[0-9]{2})\s*(.*)$/,
+        );
+        if (m) {
+          const amountNum = parseFloat(m[5].replace(/,/g, ''));
+          const type: '收入' | '支出' = amountNum < 0 ? '支出' : '收入';
+          const amount = Math.abs(amountNum);
+          const remainder = m[7].trim();
+          const { counterparty, product } =
+            this.parsePsbcCounterparty(remainder);
+
+          transactions.push({
+            date,
+            month,
+            type,
+            amount,
+            counterparty,
+            product,
+          });
+        }
+      } else {
+        i++;
+      }
     }
 
     return this.dedupeTransactions(transactions);

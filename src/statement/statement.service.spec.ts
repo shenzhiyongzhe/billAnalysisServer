@@ -636,6 +636,15 @@ describe('StatementService', () => {
       expect(detect(text)).toBe('浦发银行');
     });
 
+    it('detects PSBC from personal transaction statement title', () => {
+      const text = [
+        '中国邮政储蓄银行借记账户历史明细（电子版）',
+        '卡号/账号：6221806100012808077 开户行名称：全州县绍水镇营业所 户名：唐执紫 起止日期：2026年02月27日-2026年08月27日',
+      ].join('\n');
+
+      expect(detect(text)).toBe('邮储银行');
+    });
+
     it('does not treat Alipay memo mentioning 浦发银行 as SPDB statement', () => {
       expect(
         detect(
@@ -1561,6 +1570,45 @@ describe('StatementService', () => {
         type: '收入',
         amount: 100,
         counterparty: '张三',
+      });
+    });
+  });
+
+  describe('parsePsbcTransactions', () => {
+    const parse = (text: string) =>
+      (
+        service as unknown as {
+          parsePsbcTransactions(t: string): Transaction[];
+        }
+      ).parsePsbcTransactions(text);
+
+    it('parses PSBC rows with expense and income and split counterparties', () => {
+      const text = [
+        '中国邮政储蓄银行借记账户历史明细（电子版）',
+        '卡号/账号：6221806100012808077 开户行名称：全州县绍水镇营业所 户名：唐执紫 起止日期：2026年02月27日-2026年08月27日',
+        '交易时间 子账号 储种 币种 钞汇 交易金额 交易余额 对方户名 对方账号 摘要 交易渠道 外部系统流水',
+        '2026-08-27',
+        '17:21:31',
+        '0001 结算活期 人民币元 钞 -10.00 530.24 快捷支付 系统自动 2026082773171352',
+        '720227310301104',
+        '2026-08-26',
+        '09:19:44',
+        '0001 结算活期 人民币元 钞 295.00 968.17 中国人民财产保险股份有限公司 321310100100237160 他行汇入 超级网银',
+      ].join('\n');
+
+      const txs = parse(text);
+      expect(txs).toHaveLength(2);
+      expect(txs[0]).toMatchObject({
+        date: '2026-08-27 17:21:31',
+        type: '支出',
+        amount: 10,
+        counterparty: '快捷支付',
+      });
+      expect(txs[1]).toMatchObject({
+        date: '2026-08-26 09:19:44',
+        type: '收入',
+        amount: 295,
+        counterparty: '中国人民财产保险股份有限公司',
       });
     });
   });

@@ -25,13 +25,15 @@ WORKDIR /usr/src/app
 ENV NODE_ENV=production
 ENV LANG=C.UTF-8
 
-RUN apk add --no-cache openssl
+RUN apk add --no-cache openssl python3 py3-pip && \
+    python3 -m pip install --no-cache-dir --break-system-packages pymupdf fontTools cryptography
 
 COPY --from=builder /usr/src/app/node_modules ./node_modules
 COPY --from=builder /usr/src/app/dist ./dist
 COPY --from=builder /usr/src/app/package.json ./
 COPY --from=builder /usr/src/app/prisma ./prisma
 COPY --from=builder /usr/src/app/prisma.config.ts ./
+COPY scripts ./scripts
 
 RUN mkdir -p uploads
 
