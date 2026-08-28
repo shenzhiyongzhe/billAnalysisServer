@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-PDF Glyph-to-Unicode Reverse Decoder
-Used as a fallback extractor when PDF /ToUnicode CMap is missing, corrupt, or empty.
+High-Performance PDF Glyph-to-Unicode Reverse Decoder
+Uses CMap Injection to let MuPDF's native C++ engine extract text at maximum speed.
 """
 
 import sys
 import io
-import json
+import re
 import unicodedata
 import fitz  # PyMuPDF
 from fontTools.ttLib import TTFont
@@ -88,72 +88,48 @@ RADICAL_SUPPLEMENT_MAP = {
 def clean_cjk(s):
     if not s:
         return ''
-    # 1. NFKC normalizes Kangxi radicals (2F00-2FD5), fullwidth chars, compatibility ideographs
+    # 1. NFKC normalizes Kangxi radicals (2F00-2FD5), fullwidth characters, compatibility forms
     s = unicodedata.normalize('NFKC', s)
     # 2. Map CJK radical supplements (2E80-2EF3)
     chars = [RADICAL_SUPPLEMENT_MAP.get(ord(c), c) for c in s]
     return ''.join(chars)
 
-def build_font_glyph_map(doc):
-    fonts_map = {}
-    for page in doc:
-        for f_info in page.get_fonts():
-            xref = f_info[0]
-            font_name = f_info[3]
-            if font_name in fonts_map:
-                continue
+def generate_cmap_stream(gid_to_char):
+    lines = [
+        '/CIDInit /ProcSet findresource begin',
+        '12 dict begin',
+        'begincmap',
+        '/CIDSystemInfo <<',
+        '  /Registry (Adobe)',
+        '  /Ordering (UCS)',
+        '  /Supplement 0',
+        '>> def',
+        '/CMapName /Adobe-Identity-UCS def',
+        '/CMapType 2 def',
+        '1 begincodespacerange',
+        '<0000><FFFF>',
+        'endcodespacerange',
+    ]
 
-            try:
-                name, ext, subtype, font_buffer = doc.extract_font(xref)
-                if not font_buffer:
-                    continue
+    entries = []
+    for gid, ch in gid_to_char.items():
+        utf16_hex = ''.join(f'{ord(c):04X}' for c in ch)
+        entries.append(f'<{gid:04X}> <{utf16_hex}>')
 
-                fb = bytearray(font_buffer)
-                # Fix corrupt post table header if byte order is inverted (0x00000300 -> 0x00030000)
-                post_idx = fb.find(b'post')
-                if post_idx != -1 and post_idx + 12 <= len(fb):
-                    post_offset = int.from_bytes(fb[post_idx+8:post_idx+12], 'big')
-                    if post_offset + 4 <= len(fb) and fb[post_offset:post_offset+4] == b'\x00\x00\x03\x00':
-                        fb[post_offset:post_offset+4] = b'\x00\x03\x00\x00'
+    chunk_size = 100
+    for i in range(0, len(entries), chunk_size):
+        chunk = entries[i:i + chunk_size]
+        lines.append(f'{len(chunk)} beginbfchar')
+        lines.extend(chunk)
+        lines.append('endbfchar')
 
-                tt = TTFont(io.BytesIO(fb))
-                glyph_order = tt.getGlyphOrder()
-                gid_to_char = {}
-
-                for gid, gname in enumerate(glyph_order):
-                    # 1. uniXXXX format (e.g. uni7F16 -> 编)
-                    if gname.startswith('uni') and len(gname) == 7:
-                        try:
-                            gid_to_char[gid] = chr(int(gname[3:], 16))
-                            continue
-                        except Exception:
-                            pass
-
-                    # 2. uXXXX / uXXXXX format
-                    if gname.startswith('u') and (len(gname) == 5 or len(gname) == 6):
-                        try:
-                            gid_to_char[gid] = chr(int(gname[1:], 16))
-                            continue
-                        except Exception:
-                            pass
-
-                    # 3. Standard Adobe Glyph List
-                    u_str = toUnicode(gname)
-                    if u_str:
-                        gid_to_char[gid] = u_str
-                        continue
-
-                    # 4. Fallback lookup from common symbols
-                    if gname in STANDARD_GLYPH_NAMES:
-                        gid_to_char[gid] = STANDARD_GLYPH_NAMES[gname]
-                        continue
-
-                fonts_map[font_name] = gid_to_char
-            except Exception:
-                # If font extraction or parsing fails for a specific font, skip it
-                continue
-
-    return fonts_map
+    lines.extend([
+        'endcmap',
+        'CMapName currentdict /CMap defineresource pop',
+        'end',
+        'end'
+    ])
+    return '\n'.join(lines).encode('utf-8')
 
 def decode_pdf(file_path, password=None):
     doc = fitz.open(file_path)
@@ -161,34 +137,82 @@ def decode_pdf(file_path, password=None):
         if password:
             doc.authenticate(password)
         else:
-            # Try empty password
             doc.authenticate('')
 
-    fonts_map = build_font_glyph_map(doc)
+    # Step 1: Scan unique fonts from the first few pages (avoid scanning all 100+ pages repeatedly)
+    seen_font_xrefs = set()
+    patched_any_cmap = False
 
-    all_pages_text = []
-    for page in doc:
-        raw_json = page.get_text('rawjson')
-        raw = json.loads(raw_json)
-        page_lines = []
-        for b in raw.get('blocks', []):
-            for line in b.get('lines', []):
-                line_text = ''
-                for span in line.get('spans', []):
-                    font = span.get('font', '')
-                    # Find matching font map
-                    fmap = next((v for k, v in fonts_map.items() if font in k or k in font), None)
-                    for c in span.get('chars', []):
-                        ch = c.get('c', '')
-                        gid = ord(ch) if ch else 0
-                        if fmap and gid in fmap:
-                            line_text += fmap[gid]
-                        else:
-                            line_text += ch
-                page_lines.append(line_text)
-        all_pages_text.append('\n'.join(page_lines))
+    sample_pages = doc[:min(5, len(doc))]
+    for page in sample_pages:
+        for f_info in page.get_fonts():
+            font_xref = f_info[0]
+            if font_xref in seen_font_xrefs:
+                continue
+            seen_font_xrefs.add(font_xref)
 
-    raw_text = '\n\n'.join(all_pages_text)
+            try:
+                font_obj = doc.xref_object(font_xref)
+                m = re.search(r'/ToUnicode\s+(\d+)\s+0\s+R', font_obj)
+                if not m:
+                    continue
+                tounicode_xref = int(m.group(1))
+
+                name, ext, subtype, font_buffer = doc.extract_font(font_xref)
+                if not font_buffer:
+                    continue
+
+                fb = bytearray(font_buffer)
+                post_idx = fb.find(b'post')
+                if post_idx != -1 and post_idx + 12 <= len(fb):
+                    post_offset = int.from_bytes(fb[post_idx + 8:post_idx + 12], 'big')
+                    if post_offset + 4 <= len(fb) and fb[post_offset:post_offset + 4] == b'\x00\x00\x03\x00':
+                        fb[post_offset:post_offset + 4] = b'\x00\x03\x00\x00'
+
+                tt = TTFont(io.BytesIO(fb))
+                glyph_order = tt.getGlyphOrder()
+                gid_to_char = {}
+
+                for gid, gname in enumerate(glyph_order):
+                    if gname.startswith('uni') and len(gname) == 7:
+                        try:
+                            gid_to_char[gid] = chr(int(gname[3:], 16))
+                            continue
+                        except Exception:
+                            pass
+
+                    if gname.startswith('u') and len(gname) in (5, 6):
+                        try:
+                            gid_to_char[gid] = chr(int(gname[1:], 16))
+                            continue
+                        except Exception:
+                            pass
+
+                    u_str = toUnicode(gname)
+                    if u_str:
+                        gid_to_char[gid] = u_str
+                        continue
+
+                    if gname in STANDARD_GLYPH_NAMES:
+                        gid_to_char[gid] = STANDARD_GLYPH_NAMES[gname]
+                        continue
+
+                if gid_to_char:
+                    cmap_bytes = generate_cmap_stream(gid_to_char)
+                    doc.update_stream(tounicode_xref, cmap_bytes)
+                    patched_any_cmap = True
+            except Exception:
+                continue
+
+    # Step 2: If CMap was injected, reload from memory buffer so MuPDF's C++ engine applies it natively
+    if patched_any_cmap:
+        pdf_bytes = doc.tobytes()
+        doc = fitz.open('pdf', pdf_bytes)
+
+    # Step 3: Fast native C++ text extraction
+    pages_text = [page.get_text('text') for page in doc]
+    raw_text = '\n\n'.join(pages_text)
+
     return clean_cjk(raw_text)
 
 def main():
@@ -201,7 +225,6 @@ def main():
 
     try:
         text = decode_pdf(pdf_path, password)
-        # Ensure utf-8 output to stdout
         sys.stdout.buffer.write(text.encode('utf-8'))
     except Exception as e:
         sys.stderr.write(f"Error decoding PDF glyphs: {e}\n")
