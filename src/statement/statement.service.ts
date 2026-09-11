@@ -17,22 +17,6 @@ import * as ExcelJS from 'exceljs';
 import { PdfTextExtractor } from './pdf-text-extractor';
 import { ShareCodeService } from '../share-code/share-code.service';
 
-const DEFAULT_QUERY_SERVER_BASE = 'https://www.xinde8888.com/api/query_info';
-
-function resolveQueryServerBaseUrl(): string {
-  const explicit = process.env.QUERY_SERVER_BASE_URL?.trim();
-  if (explicit) return explicit.replace(/\/$/, '');
-  return DEFAULT_QUERY_SERVER_BASE;
-}
-
-const QUERY_SERVER_BASE_URL = resolveQueryServerBaseUrl();
-
-function queryServerUrl(urlPath: string, searchParams?: URLSearchParams): string {
-  const normalizedPath = urlPath.startsWith('/') ? urlPath : `/${urlPath}`;
-  const url = `${QUERY_SERVER_BASE_URL}${normalizedPath}`;
-  const query = searchParams?.toString();
-  return query ? `${url}?${query}` : url;
-}
 
 function stripNullBytes<T>(obj: T): T {
   if (typeof obj === 'string') {
@@ -1240,67 +1224,19 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     return meta;
   }
 
-  private extractEndOfId(summary: StatementSummary): string | null {
-    if (summary.idNumber) return summary.idNumber.slice(-6);
-    if (summary.cardNumber) return summary.cardNumber.slice(-4);
-    return null;
-  }
-
-  private async checkHighRisk(summary: StatementSummary): Promise<boolean> {
-    if (!summary.name || summary.name === '未知') return false;
-
-    const endOfId = this.extractEndOfId(summary);
-    const params = new URLSearchParams({ name: summary.name });
-    if (endOfId) params.set('end_of_id', endOfId);
-
-    const url = queryServerUrl('/web-api/records/check-high-risk', params);
-
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 3000);
-      const response = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeout);
-
-      if (!response.ok) {
-        const text = await response.text();
-        this.logger.warn(`check-high-risk failed: ${response.status} ${text}`);
-        return false;
-      }
-
-      const data = await response.json();
-      return data?.result?.isHighRisk === true;
-    } catch (err) {
-      this.logger.warn('check-high-risk request error:', err);
-      return false;
-    }
-  }
-
   async getRiskStatus(
     id: number,
     userId: number,
   ): Promise<{ isHighRisk: boolean }> {
     await this.assertRecordOwnership(id, userId);
-    return this.buildRiskStatus(id);
+    return { isHighRisk: false };
   }
 
   async getShareByCodeRiskStatus(
     code: string,
   ): Promise<{ isHighRisk: boolean }> {
-    const record = await this.resolveSharedRecord(code);
-    return this.buildRiskStatus(record.id);
-  }
-
-  private async buildRiskStatus(id: number): Promise<{ isHighRisk: boolean }> {
-    const record = await this.prisma.queryRecord.findUnique({
-      where: { id },
-      select: { summaryJson: true },
-    });
-    if (!record?.summaryJson) {
-      return { isHighRisk: false };
-    }
-    const summary = record.summaryJson as unknown as StatementSummary;
-    const isHighRisk = await this.checkHighRisk(summary);
-    return { isHighRisk };
+    await this.resolveSharedRecord(code);
+    return { isHighRisk: false };
   }
 
   async getResultBundle(
