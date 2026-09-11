@@ -683,45 +683,6 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         },
       });
 
-      // 将解析数据同步传到另一个服务器上
-      try {
-        const wechatUser = await this.prisma.wechatUser.findUnique({
-          where: { id: userId },
-          select: { nickname: true, openid: true },
-        });
-
-        const response = await fetch(queryServerUrl('/persons/query-record'), {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': 'bill_query_record_secret_key_2026',
-          },
-          body: JSON.stringify({
-            name: parsedData.summary.name,
-            end_of_id: parsedData.summary.idNumber
-              ? parsedData.summary.idNumber.slice(-6)
-              : null,
-            first_querior: wechatUser?.nickname,
-            first_querior_id: wechatUser?.openid,
-          }),
-        });
-
-        if (!response.ok) {
-          const text = await response.text();
-          this.logger.error(
-            `Failed to send query record to external server: ${response.status} ${text}`,
-          );
-        } else {
-          this.logger.log(
-            `Successfully sent query record for user ${userId} to external server`,
-          );
-        }
-      } catch (apiErr) {
-        this.logger.error(
-          'Error sending query record to external server:',
-          apiErr,
-        );
-      }
     } catch (err) {
       if (err instanceof PasswordException) {
         this.logger.warn(`PDF is password protected for record ${recordId}`);
