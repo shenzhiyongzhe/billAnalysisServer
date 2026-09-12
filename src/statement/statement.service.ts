@@ -215,27 +215,17 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         filePath: {
           startsWith: md5,
         },
+        status: { in: ['done', 'password_required'] },
         createdAt: { gte: threeDaysAgo },
       },
+      orderBy: { createdAt: 'desc' },
     });
 
     if (existing) {
-      const isFormatError =
-        existing.status === 'failed' &&
-        existing.summaryJson &&
-        typeof existing.summaryJson === 'object' &&
-        (existing.summaryJson as any).error?.includes('格式');
-
-      if (
-        existing.status === 'done' ||
-        existing.status === 'password_required' ||
-        isFormatError
-      ) {
-        this.logger.log(
-          `Found duplicate statement upload by hash for user ${userId}, reusing record ${existing.id}`,
-        );
-        return { id: existing.id, isDuplicate: true };
-      }
+      this.logger.log(
+        `Found duplicate statement upload by hash for user ${userId}, reusing record ${existing.id}`,
+      );
+      return { id: existing.id, isDuplicate: true };
     }
 
     // 0b. Any user: find a recent done parse to clone (new row + charge, skip re-parse)
@@ -318,22 +308,13 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
           where: {
             userId,
             filePath: { startsWith: md5 },
+            status: { in: ['done', 'password_required'] },
             createdAt: { gte: threeDaysAgo },
           },
+          orderBy: { createdAt: 'desc' },
         });
         if (duplicate) {
-          const isFormatError =
-            duplicate.status === 'failed' &&
-            duplicate.summaryJson &&
-            typeof duplicate.summaryJson === 'object' &&
-            (duplicate.summaryJson as any).error?.includes('格式');
-          if (
-            duplicate.status === 'done' ||
-            duplicate.status === 'password_required' ||
-            isFormatError
-          ) {
-            return { id: duplicate.id, created: false, isDuplicate: true };
-          }
+          return { id: duplicate.id, created: false, isDuplicate: true };
         }
 
         const user = await tx.wechatUser.findUnique({

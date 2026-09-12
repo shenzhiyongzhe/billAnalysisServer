@@ -196,6 +196,38 @@ describe('StatementService', () => {
       expect((service as any).parseAndUpdateRecord).not.toHaveBeenCalled();
     });
 
+    it('does not reuse a previously failed record and re-parses on re-upload', async () => {
+      prisma.queryRecord.findUnique.mockResolvedValue(null);
+      prisma.queryRecord.findFirst.mockResolvedValue(null);
+      prisma.wechatUser.findUnique.mockResolvedValue({
+        id: 7,
+        monthlyCardExpiry: null,
+      });
+      prisma.wechatUser.updateMany.mockResolvedValue({ count: 1 });
+      prisma.queryRecord.create.mockResolvedValue({ id: 101 });
+      prisma.$transaction.mockImplementation((callback) => callback(prisma));
+
+      await expect(
+        service.processAndSaveFile(
+          7,
+          Buffer.from('unsupported-then-supported-pdf'),
+          '中信银行.pdf',
+          'upload_request_retry_failed',
+        ),
+      ).resolves.toEqual({ id: 101, isDuplicate: false });
+
+      expect(prisma.queryRecord.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            userId: 7,
+            status: { in: ['done', 'password_required'] },
+          }),
+          orderBy: { createdAt: 'desc' },
+        }),
+      );
+      expect(prisma.$transaction).toHaveBeenCalled();
+    });
+
     it('clones another user done result into a new record and skips parse', async () => {
       const cloneSource = {
         id: 10,
