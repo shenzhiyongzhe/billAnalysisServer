@@ -540,6 +540,16 @@ describe('StatementService', () => {
       expect(
         detect(
           [
+            '中国工商银行账户明细清单',
+            '账号： 3602001509200185444 币种： 人民币 单位： 元',
+            '本方账号户名： 广州市盛和世佳服饰有限公司 本方账号开户行： 工行新市支行 时间范围： 20260218 - 20260817',
+          ].join('\n'),
+        ),
+      ).toBe('工商银行');
+
+      expect(
+        detect(
+          [
             '广东顺德农村商业银行股份有限公司',
             '账户/卡明细信息',
             '账号/卡号：6223222020253306 户名：xxxx 币种：CNY',
@@ -1374,6 +1384,50 @@ describe('StatementService', () => {
         date: '2026-07-01 22:00:00',
       });
     });
+
+    it('parses Industrial and Commercial Bank of China (ICBC) 账户明细清单', () => {
+      const textContent = [
+        '中国工商银行账户明细清单',
+        '账号： 3602001509200185444 币种： 人民币 单位： 元',
+        '本方账号户名： 广州市盛和世佳服饰有限公司 本方账号开户行： 工行新市支行 时间范围： 20260218 - 20260817',
+        '对方账号 交易时间 借贷标志 对方单位 对方行号 用途 摘要 附言 回单个性化信息 余额 转出金额 转入金额',
+        '3602001511500819213 2026-08-09 22:13:15 借 跨行汇款手续费 产品名称:人行境内大额 汇款 费用名称:对公跨行 汇款手续费 应收金额 5,041.63 9.00',
+        '6228480086112598072 2026-08-09 10:37:41 借 刘杰 103100000026 备用金 备用金 附言: 指令编号 :HQP924060438180 提交 人:Shenghe552.c.3602 最 5,050.63 20,000.00',
+        '3602186609100325270 2026-08-07 11:14:34 贷 广州大睿电子商务有限 公司 货款 货款 合同订金（制单号 ：202607023） 客户备注:合同订金（制 单号：202607023） 25,050.63 11,200.00',
+        '重要提示：本明细仅限于查询账户交易流水使用，在跨行退回、日终冲账等特殊情况下存在后续变动可能',
+        '第1页',
+      ].join('\n');
+
+      const parsedSource = service.detectSourceFromText(textContent);
+      expect(parsedSource).toBe('工商银行');
+
+      const parsedData = (service as any).extractData(textContent, '工商银行');
+      expect(parsedData.summary.name).toBe('广州市盛和世佳服饰有限公司');
+      expect(parsedData.summary.cardNumber).toBe('3602001509200185444');
+      expect(parsedData.summary.startDate).toBe('2026-02-18');
+      expect(parsedData.summary.endDate).toBe('2026-08-17');
+      expect(parsedData.summary.totalIncome).toBe(11200);
+      expect(parsedData.summary.totalExpenditure).toBe(20009);
+      expect(parsedData.transactions).toHaveLength(3);
+      expect(parsedData.transactions[0]).toMatchObject({
+        date: '2026-08-09 22:13:15',
+        type: '支出',
+        amount: 9,
+        counterparty: '跨行汇款手续费',
+      });
+      expect(parsedData.transactions[1]).toMatchObject({
+        date: '2026-08-09 10:37:41',
+        type: '支出',
+        amount: 20000,
+        counterparty: '刘杰',
+      });
+      expect(parsedData.transactions[2]).toMatchObject({
+        date: '2026-08-07 11:14:34',
+        type: '收入',
+        amount: 11200,
+        counterparty: '广州大睿电子商务有限公司',
+      });
+    });
   });
 
   describe('parseXlsxFile WeChat 交易明细证明', () => {
@@ -1610,6 +1664,96 @@ describe('StatementService', () => {
         amount: 295,
         counterparty: '中国人民财产保险股份有限公司',
       });
+    });
+  });
+
+  describe('parseCiticTransactions', () => {
+    const parse = (text: string) =>
+      (
+        service as unknown as {
+          parseCiticTransactions(t: string): Transaction[];
+        }
+      ).parseCiticTransactions(text);
+
+    it('parses CITIC Bank transactions with correct direction and counterparties', () => {
+      const text = [
+        '账户交易明细',
+        'Transaction details',
+        '户名：叶鹤 证件类型：居民身份证 证件号码：330381199303014170',
+        '账号：6217733006172649 时间段：20250910-20260909 开立日期：2026-09-10',
+        '20250911 RMB 4,500.00 RMB 12,082.89 网银互联跨行转出 451060200018170986649 南宁市精益眼镜有限责任公司',
+        '20250915 RMB 48,396.60 RMB 60,479.49 财付通快捷支付 602117068 叶鹤',
+        '20250915 RMB 50,000.00 RMB 110,479.49 支付宝 20880223174893980156 叶鹤',
+        '20250916 RMB 50.00 RMB 110,429.49 银行收费',
+      ].join('\n');
+
+      const txs = parse(text);
+      expect(txs).toHaveLength(4);
+      expect(txs[0]).toMatchObject({
+        date: '2025-09-11',
+        month: '2025-09',
+        type: '支出',
+        amount: 4500,
+        counterparty: '南宁市精益眼镜有限责任公司',
+      });
+      expect(txs[1]).toMatchObject({
+        date: '2025-09-15',
+        month: '2025-09',
+        type: '收入',
+        amount: 48396.6,
+        counterparty: '叶鹤',
+      });
+      expect(txs[2]).toMatchObject({
+        date: '2025-09-15',
+        month: '2025-09',
+        type: '收入',
+        amount: 50000,
+        counterparty: '叶鹤',
+      });
+      expect(txs[3]).toMatchObject({
+        date: '2025-09-16',
+        month: '2025-09',
+        type: '支出',
+        amount: 50,
+        counterparty: '银行收费',
+      });
+    });
+
+    it('detects and extracts CITIC statement summary and source', () => {
+      const text = [
+        '账户交易明细',
+        'Transaction details',
+        '户名：叶鹤 证件类型：居民身份证 证件号码：330381199303014170',
+        '账号：6217733006172649 时间段：20250910-20260909 开立日期：2026-09-10',
+        '20250911 RMB 4,500.00 RMB 12,082.89 网银互联跨行转出 451060200018170986649 南宁市精益眼镜有限责任公司',
+      ].join('\n');
+
+      const detectSource = (t: string) =>
+        (
+          service as unknown as {
+            detectSourceFromText(text: string): string | null;
+          }
+        ).detectSourceFromText(t);
+
+      const extractData = (t: string, s: string) =>
+        (
+          service as unknown as {
+            extractData(text: string, source: string): any;
+          }
+        ).extractData(t, s);
+
+      expect(detectSource(text)).toBe('中信银行');
+
+      const data = extractData(text, '中信银行');
+      expect(data.summary).toMatchObject({
+        name: '叶鹤',
+        idNumber: '330381199303014170',
+        cardNumber: '6217733006172649',
+        startDate: '2025-09-10',
+        endDate: '2026-09-09',
+        source: '中信银行',
+      });
+      expect(data.transactions).toHaveLength(1);
     });
   });
 });

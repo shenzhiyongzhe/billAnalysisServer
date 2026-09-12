@@ -289,6 +289,8 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       source = '邮储银行';
     else if (originalname.includes('中国银行') || originalname.includes('中行'))
       source = '中国银行';
+    else if (originalname.includes('中信'))
+      source = '中信银行';
 
     // ② 写文件，并在事务内完成扣次和建记录
     const fileName = `${md5}_${originalname}`;
@@ -530,7 +532,7 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
 
         if (!detected) {
           const errorMessage =
-            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行、农商银行、农业银行、建设银行、民生银行、浦发银行、邮储银行或中国银行交易流水。';
+            '不支持的账单格式，请上传正确的微信、支付宝、招商银行、交通银行、工商银行、农商银行、农业银行、建设银行、民生银行、浦发银行、邮储银行、中国银行或中信银行交易流水。';
           await this.safeLogUnsupportedFormat({
             userId,
             queryRecordId: recordId,
@@ -1381,7 +1383,12 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       return '交通银行';
     }
 
-    if (headerText.includes('中国工商银行借记账户历史明细')) {
+    if (
+      headerText.includes('中国工商银行借记账户历史明细') ||
+      headerText.includes('中国工商银行账户明细清单') ||
+      headerText.includes('中国工商银行') ||
+      headerText.includes('工商银行')
+    ) {
       return '工商银行';
     }
 
@@ -1426,6 +1433,15 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       headerText.includes('电子客户回单')
     ) {
       return '支付宝';
+    }
+
+    if (
+      headerText.includes('中信银行') ||
+      (headerText.includes('账户交易明细') &&
+        headerText.includes('Transaction details')) ||
+      (text.includes('中信银行') && headerText.includes('账户交易明细'))
+    ) {
+      return '中信银行';
     }
 
     return null;
@@ -1572,56 +1588,33 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       }
       transactions.push(...this.parseBocomTransactions(text));
     } else if (source === '工商银行') {
-      const nameMatch = text.match(/户名：(.*?)\s+/);
+      const nameMatch =
+        text.match(/本方账号户名[：:]\s*([^\s\n]+)/) ||
+        text.match(/户名[：:]\s*([^\s\n]+)/);
       if (nameMatch) {
-        name = nameMatch[1];
+        name = nameMatch[1].trim();
       }
-      const cardMatch = text.match(/卡号\s+(\d+)/);
+      const cardMatch =
+        text.match(/账号[：:]\s*([0-9*]+)/) ||
+        text.match(/卡号\s*([0-9*]+)/);
       if (cardMatch) {
-        cardNumber = cardMatch[1];
+        cardNumber = cardMatch[1].trim();
       }
-      const rangeMatch = text.match(
-        /起止日期：(\d{4}-\d{2}-\d{2})\s*—\s*(\d{4}-\d{2}-\d{2})/,
+      const rangeMatchYmd = text.match(
+        /起止日期[：:]\s*(\d{4}-\d{2}-\d{2})\s*[—\-]\s*(\d{4}-\d{2}-\d{2})/,
       );
-      if (rangeMatch) {
-        startDate = rangeMatch[1];
-        endDate = rangeMatch[2];
+      const rangeMatchYmdCompact = text.match(
+        /时间范围[：:]\s*(\d{4})(\d{2})(\d{2})\s*[-—]\s*(\d{4})(\d{2})(\d{2})/,
+      );
+      if (rangeMatchYmdCompact) {
+        startDate = `${rangeMatchYmdCompact[1]}-${rangeMatchYmdCompact[2]}-${rangeMatchYmdCompact[3]}`;
+        endDate = `${rangeMatchYmdCompact[4]}-${rangeMatchYmdCompact[5]}-${rangeMatchYmdCompact[6]}`;
+      } else if (rangeMatchYmd) {
+        startDate = rangeMatchYmd[1];
+        endDate = rangeMatchYmd[2];
       }
 
-      const lines = text
-        .split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean);
-      let currentDate = '';
-
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (/^\d{4}-\d{2}-\d{2}$/.test(line)) {
-          currentDate = line;
-          continue;
-        }
-
-        const timeMatch = line.match(/^(\d{2}:\d{2}:\d{2})/);
-        if (timeMatch && currentDate) {
-          const match = line.match(
-            /^(\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+([+-][0-9,]+\.[0-9]{2})\s+([0-9,]+\.[0-9]{2})\s*(.*?)$/,
-          );
-          if (match) {
-            const time = match[1];
-            const date = `${currentDate} ${time}`;
-            const month = currentDate.substring(0, 7);
-            const abstract = match[7];
-            const amountStr = match[9].replace(/,/g, '');
-            const amountNum = parseFloat(amountStr);
-            const type = amountNum < 0 ? '支出' : '收入';
-            const amount = Math.abs(amountNum);
-            const channel = match[11] || '';
-            const counterparty = channel ? `${abstract}-${channel}` : abstract;
-
-            transactions.push({ date, month, type, amount, counterparty });
-          }
-        }
-      }
+      transactions.push(...this.parseIcbcTransactions(text));
     } else if (source === '农商银行') {
       const nameMatch = text.match(/户名：(.*?)\s+/);
       if (nameMatch) {
@@ -1829,6 +1822,27 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         endDate = `${rangeMatch[4]}-${rangeMatch[5]}-${rangeMatch[6]}`;
       }
       transactions.push(...this.parsePsbcTransactions(text));
+    } else if (source === '中信银行') {
+      const nameMatch = text.match(/户名[：:]\s*([^\s\n]+)/);
+      if (nameMatch) {
+        name = nameMatch[1].trim();
+      }
+      const idMatch = text.match(/证件号码[：:]\s*([0-9Xx]+)/);
+      if (idMatch) {
+        idNumber = idMatch[1].trim();
+      }
+      const cardMatch = text.match(/账号[：:]\s*([0-9]+)/);
+      if (cardMatch) {
+        cardNumber = cardMatch[1].trim();
+      }
+      const rangeMatch = text.match(/时间段[：:]\s*(\d{8})-(\d{8})/);
+      if (rangeMatch) {
+        const fmt = (d: string) =>
+          `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+        startDate = fmt(rangeMatch[1]);
+        endDate = fmt(rangeMatch[2]);
+      }
+      transactions.push(...this.parseCiticTransactions(text));
     }
 
     transactions.sort((a, b) => a.date.localeCompare(b.date));
@@ -2062,6 +2076,176 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
 
     return transactions;
+  }
+
+  private parseIcbcCounterparty(body: string): string {
+    const s = body.trim();
+    if (!s) return '其他';
+
+    // 1. 手续费类产品名称: "跨行汇款手续费 产品名称:人行境内大额..."
+    const prodIdx = s.indexOf('产品名称:');
+    if (prodIdx > 0) {
+      return s.slice(0, prodIdx).replace(/\s+/g, '').trim() || '手续费';
+    }
+
+    // 2. 10-12位银行清算行号: "刘杰 103100000026 备用金..."
+    const bankCodeMatch = s.match(/\s+(\d{10,12})\s+/);
+    if (bankCodeMatch && bankCodeMatch.index && bankCodeMatch.index > 0) {
+      return s.slice(0, bankCodeMatch.index).replace(/\s+/g, '').trim();
+    }
+
+    // 3. 重复出现的用途/摘要关键字: 如 "预付款 预付款", "货款 货款", "还款 还款"
+    const repeatedMatch = s.match(/\s+([^\s:]{2,10})\s+\1(?:\s|$)/);
+    if (repeatedMatch && repeatedMatch.index && repeatedMatch.index > 0) {
+      return s.slice(0, repeatedMatch.index).replace(/\s+/g, '').trim();
+    }
+
+    // 4. 常见用途/摘要/附言标记词
+    const purposeKeywords = [
+      '货款',
+      '备用金',
+      '借款',
+      '设备款',
+      '加工费',
+      '跨行',
+      '预付款',
+      '还款',
+      '对公贷款记账',
+      '对公贷款利息支付',
+      '代理国库税收收缴',
+      '1社保',
+      '客户备注:',
+      '附言:',
+      '用途:',
+    ];
+    let minIdx = -1;
+    for (const kw of purposeKeywords) {
+      const idx = s.indexOf(kw);
+      if (idx > 0 && (minIdx === -1 || idx < minIdx)) {
+        minIdx = idx;
+      }
+    }
+    if (minIdx > 0) {
+      return s.slice(0, minIdx).replace(/\s+/g, '').trim();
+    }
+
+    // 5. 兜底取首个字段或整体清洗
+    const firstToken = s.split(/\s+/)[0].trim();
+    return firstToken || '其他';
+  }
+
+  private parseIcbcAccountDetailTransactions(text: string): Transaction[] {
+    const transactions: Transaction[] = [];
+
+    const cleanText = text
+      .replace(/重要提示：本明细仅限于查询账户交易流水使用[\s\S]*?第\d+页/g, '')
+      .replace(
+        /中国工商银行账户明细清单[\s\S]*?对方账号\s+交易时间\s+借贷标志[\s\S]*?(?=\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+[借贷]|\d{10,}\s+\d{4}-\d{2}-\d{2})/g,
+        '',
+      );
+
+    const anchorRegex = /(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+([借贷])/g;
+    const anchors = [...cleanText.matchAll(anchorRegex)];
+
+    for (let i = 0; i < anchors.length; i++) {
+      const a = anchors[i];
+      const next = anchors[i + 1];
+      const startIdx = a.index;
+      const endIdx = next ? next.index : cleanText.length;
+
+      const date = a[1];
+      const month = date.substring(0, 7);
+      const dir = a[2];
+      const type: '收入' | '支出' = dir === '借' ? '支出' : '收入';
+
+      const afterDir = cleanText.slice(startIdx + a[0].length, endIdx).trim();
+      const numMatches = [
+        ...afterDir.matchAll(/([0-9]{1,3}(?:,[0-9]{3})*\.[0-9]{2})/g),
+      ];
+
+      let body = afterDir;
+      let amount = 0;
+      if (numMatches.length >= 2) {
+        body = afterDir.slice(0, numMatches[numMatches.length - 2].index).trim();
+        amount = Math.abs(
+          parseFloat(numMatches[numMatches.length - 1][1].replace(/,/g, '')),
+        );
+      } else if (numMatches.length === 1) {
+        body = afterDir.slice(0, numMatches[0].index).trim();
+        amount = Math.abs(parseFloat(numMatches[0][1].replace(/,/g, '')));
+      }
+
+      if (amount <= 0 || isNaN(amount)) {
+        continue;
+      }
+
+      const counterparty = this.parseIcbcCounterparty(body);
+
+      transactions.push({
+        date,
+        month,
+        type,
+        amount,
+        counterparty: counterparty || '未知',
+      });
+    }
+
+    return transactions;
+  }
+
+  private parseIcbcDebitHistoryTransactions(text: string): Transaction[] {
+    const transactions: Transaction[] = [];
+    const lines = text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    let currentDate = '';
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (/^\d{4}-\d{2}-\d{2}$/.test(line)) {
+        currentDate = line;
+        continue;
+      }
+
+      const timeMatch = line.match(/^(\d{2}:\d{2}:\d{2})/);
+      if (timeMatch && currentDate) {
+        const match = line.match(
+          /^(\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+([+-][0-9,]+\.[0-9]{2})\s+([0-9,]+\.[0-9]{2})\s*(.*?)$/,
+        );
+        if (match) {
+          const time = match[1];
+          const date = `${currentDate} ${time}`;
+          const month = currentDate.substring(0, 7);
+          const abstract = match[7];
+          const amountStr = match[9].replace(/,/g, '');
+          const amountNum = parseFloat(amountStr);
+          const type = amountNum < 0 ? '支出' : '收入';
+          const amount = Math.abs(amountNum);
+          const channel = match[11] || '';
+          const counterparty = channel ? `${abstract}-${channel}` : abstract;
+
+          transactions.push({ date, month, type, amount, counterparty });
+        }
+      }
+    }
+
+    return transactions;
+  }
+
+  private parseIcbcTransactions(text: string): Transaction[] {
+    if (
+      text.includes('中国工商银行账户明细清单') ||
+      /\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+[借贷]/.test(text)
+    ) {
+      const txs = this.parseIcbcAccountDetailTransactions(text);
+      if (txs.length > 0) {
+        return txs;
+      }
+    }
+
+    const txs = this.parseIcbcDebitHistoryTransactions(text);
+    return this.dedupeTransactions(txs);
   }
 
   private isAbcTransactionStart(line: string): boolean {
@@ -2785,6 +2969,107 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     }
 
     return this.dedupeTransactions(transactions);
+  }
+
+  private parseCiticTransactions(text: string): Transaction[] {
+    const lines = text.split('\n');
+    const rowRegex =
+      /^(\d{8})\s+RMB\s+([0-9,]+\.[0-9]{2})\s+RMB\s+([0-9,]+\.[0-9]{2})\s*(.*)$/;
+
+    const parsedRows: {
+      rawDate: string;
+      amount: number;
+      balance: number;
+      remainder: string;
+    }[] = [];
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      const match = line.match(rowRegex);
+      if (match) {
+        const rawDate = match[1];
+        const amount = parseFloat(match[2].replace(/,/g, ''));
+        const balance = parseFloat(match[3].replace(/,/g, ''));
+        const remainder = match[4].trim();
+        parsedRows.push({
+          rawDate,
+          amount,
+          balance,
+          remainder,
+        });
+      }
+    }
+
+    const transactions: Transaction[] = [];
+
+    const determineType = (
+      cur: (typeof parsedRows)[0],
+      prev: (typeof parsedRows)[0] | null,
+    ): '收入' | '支出' => {
+      if (prev) {
+        const diffAdd = Math.abs(prev.balance + cur.amount - cur.balance);
+        const diffSub = Math.abs(prev.balance - cur.amount - cur.balance);
+        if (diffAdd < 0.05 && diffSub >= 0.05) return '收入';
+        if (diffSub < 0.05 && diffAdd >= 0.05) return '支出';
+      }
+
+      const rem = cur.remainder;
+      if (/转入|入账|结息|代付|赎回|退款/.test(rem)) return '收入';
+      if (
+        /转出|收费|手续费|支取|代收|兑出|购买|消费|还款|贷款|美团/.test(
+          rem,
+        )
+      ) {
+        return '支出';
+      }
+
+      if (cur.amount > cur.balance) return '支出';
+
+      if (prev) {
+        return cur.balance < prev.balance ? '支出' : '收入';
+      }
+
+      return '支出';
+    };
+
+    const parseCounterparty = (remainder: string): string => {
+      if (!remainder) return '中信银行';
+      const tokens = remainder.split(/\s+/).filter(Boolean);
+      if (tokens.length === 1) return tokens[0];
+
+      const acctIdx = tokens.findIndex((t) => /^\d{4,}$/.test(t));
+      if (acctIdx !== -1) {
+        const after = tokens.slice(acctIdx + 1).join(' ').trim();
+        if (after) {
+          return after;
+        }
+        const before = tokens.slice(0, acctIdx).join(' ').trim();
+        if (before) {
+          return before;
+        }
+      }
+
+      return remainder;
+    };
+
+    for (let i = 0; i < parsedRows.length; i++) {
+      const cur = parsedRows[i];
+      const prev = i > 0 ? parsedRows[i - 1] : null;
+      const type = determineType(cur, prev);
+      const date = `${cur.rawDate.slice(0, 4)}-${cur.rawDate.slice(4, 6)}-${cur.rawDate.slice(6, 8)}`;
+      const month = date.substring(0, 7);
+      const counterparty = parseCounterparty(cur.remainder);
+
+      transactions.push({
+        date,
+        month,
+        type,
+        amount: cur.amount,
+        counterparty,
+      });
+    }
+
+    return transactions;
   }
 
   private parseAlipayCustomerReceiptTransactions(text: string): Transaction[] {
