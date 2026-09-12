@@ -1356,6 +1356,13 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       return '微信';
     }
 
+    if (
+      /支付宝支付科技有限公司\s+(交易流水证明|电子客户回单)/.test(headerText) ||
+      headerText.includes('电子客户回单')
+    ) {
+      return '支付宝';
+    }
+
     if (headerText.includes('招商银行交易流水')) {
       return '招商银行';
     }
@@ -1367,8 +1374,12 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
     if (
       headerText.includes('中国工商银行借记账户历史明细') ||
       headerText.includes('中国工商银行账户明细清单') ||
-      headerText.includes('中国工商银行') ||
-      headerText.includes('工商银行')
+      headerText.includes('中国工商银行个人借记账户历史明细') ||
+      (headerText.includes('中国工商银行') &&
+        (headerText.includes('账户明细') ||
+          headerText.includes('历史明细') ||
+          headerText.includes('本方账号') ||
+          headerText.includes('借贷标志')))
     ) {
       return '工商银行';
     }
@@ -1407,13 +1418,6 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
       headerText.includes('邮政储蓄银行')
     ) {
       return '邮储银行';
-    }
-
-    if (
-      /支付宝支付科技有限公司\s+(交易流水证明|电子客户回单)/.test(headerText) ||
-      headerText.includes('电子客户回单')
-    ) {
-      return '支付宝';
     }
 
     if (
@@ -1457,9 +1461,19 @@ export class StatementService implements OnModuleInit, OnModuleDestroy {
         if (nameMatch[2]) idNumber = nameMatch[2];
       }
 
-      const accountMatch = text.match(/支付宝账户[：:]\s*([^\s\n\r]+)/);
+      const accountMatch =
+        text.match(/支付宝账户[：:]\s*([^\s\n\r]+)/) ||
+        text.match(/支付宝账号\s*([0-9a-zA-Z@._-]+)/);
       if (accountMatch) {
         phoneNumber = accountMatch[1].trim();
+      }
+
+      const rangeMatch = text.match(
+        /交易时间段[：:]\s*(\d{4}-\d{2}-\d{2})(?:\s+[\d:]+)?\s*至\s*(\d{4}-\d{2}-\d{2})/,
+      );
+      if (rangeMatch) {
+        startDate = rangeMatch[1];
+        endDate = rangeMatch[2];
       }
 
       if (text.includes('电子客户回单') || text.includes('导出信息：')) {

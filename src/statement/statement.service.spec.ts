@@ -633,6 +633,21 @@ describe('StatementService', () => {
       expect(detect(text)).toBe('中国银行');
     });
 
+    it('does not treat Alipay statement mentioning 中国工商银行 as ICBC statement', () => {
+      const text = [
+        '编号: 2026091200085004422376063247240092456253',
+        '支付宝支付科技有限公司 交易流水证明',
+        '兹证明:王波(证件号码:510623199810055539)在其支付宝账号17612081005中明细信息如下:',
+        '币种：人民币 / 单位：元',
+        '交易时间段：2025-09-12 00:00:00 至 2026-09-11 23:59:59',
+        '收/支 交易对方 商品说明 收/付款方式 金额 交易订单号 商家订单号 交易时间',
+        '不计',
+        '收支 中国工商银行 提现-实时提现 余额 114.00 20260910200040011100240',
+      ].join('\n');
+
+      expect(detect(text)).toBe('支付宝');
+    });
+
     it('does not treat Alipay memo mentioning 中国银行 as BOC statement', () => {
       expect(
         detect(
@@ -1414,6 +1429,49 @@ describe('StatementService', () => {
         amount: 26,
         counterparty: '钉钉红包',
         date: '2026-07-01 22:00:00',
+      });
+    });
+
+    it('parses Alipay 交易流水证明 PDF text format with ICBC withdrawal in transactions', () => {
+      const textContent = [
+        '编号: 2026091200085004422376063247240092456253',
+        '支付宝支付科技有限公司 交易流水证明',
+        '兹证明:王波(证件号码:510623199810055539)在其支付宝账号17612081005中明细信息如下:',
+        '币种：人民币 / 单位：元',
+        '交易时间段：2025-09-12 00:00:00 至 2026-09-11 23:59:59',
+        '交易类型：全部',
+        '收/支 交易对方 商品说明 收/付款方式 金额 交易订单号 商家订单号 交易时间',
+        '不计',
+        '收支 中国工商银行 提现-实时提现 余额 114.00 20260910200040011100240',
+        '026100217 06a7f3b32d991661090b7a5',
+        '931154010 2026-09-10',
+        '07:09:18',
+        '收入 *飞 收钱码收款 25.00 20260910230014016814009',
+        '01021 47889848278522502701688 2026-09-10',
+        '04:13:48',
+      ].join('\n');
+
+      const parsedSource = service.detectSourceFromText(textContent);
+      expect(parsedSource).toBe('支付宝');
+
+      const parsedData = (service as any).extractData(textContent, '支付宝');
+      expect(parsedData.summary.name).toBe('王波');
+      expect(parsedData.summary.idNumber).toBe('510623199810055539');
+      expect(parsedData.summary.phoneNumber).toBe('17612081005');
+      expect(parsedData.summary.startDate).toBe('2025-09-12');
+      expect(parsedData.summary.endDate).toBe('2026-09-11');
+      expect(parsedData.transactions).toHaveLength(2);
+      expect(parsedData.transactions[0]).toMatchObject({
+        type: '不计收支',
+        amount: 114,
+        counterparty: '中国工商银行',
+        date: '2026-09-10 07:09:18',
+      });
+      expect(parsedData.transactions[1]).toMatchObject({
+        type: '收入',
+        amount: 25,
+        counterparty: '*飞',
+        date: '2026-09-10 04:13:48',
       });
     });
 
