@@ -15,6 +15,19 @@ async function bootstrap() {
     httpAdapter.set('trust proxy', 1);
   }
   app.enableCors();
+
+  // 临时维护：除内部健康检查外，所有请求统一返回 404
+  app.use((req: any, res: any) => {
+    if (req.method === 'GET' && (req.path === '/' || req.url === '/')) {
+      return res.status(200).send('OK');
+    }
+    return res.status(404).json({
+      statusCode: 404,
+      message: `Cannot ${req.method} ${req.originalUrl || req.url}`,
+      error: 'Not Found',
+    });
+  });
+
   const port = Number(process.env.PORT) || 3000;
   await app.listen(port);
 }
